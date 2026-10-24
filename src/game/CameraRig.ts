@@ -149,14 +149,14 @@ export class CameraRig {
         if (v.lengthSq() > 0.5) this.fdir.lerp(v.normalize(), k(sp > 4 ? 2.2 : 0.6)).normalize();
         const discPos = new THREE.Vector3(d.x, d.y, d.z);
         // Close behind the frisbee so its wobble and curve are easy to follow.
-        const dist = 1.9 + Math.min(sp, 20) * 0.08;
-        const height = 0.75 + Math.min(sp, 20) * 0.03;
+        const dist = 1.15 + Math.min(sp, 20) * 0.05;
+        const height = 0.45 + Math.min(sp, 20) * 0.02;
         this.goalPos.copy(discPos).addScaledVector(this.fdir, -dist);
         this.goalPos.y += height;
-        if (this.ground) this.goalPos.y = Math.max(this.goalPos.y, this.ground(this.goalPos.x, this.goalPos.z) + 0.6);
+        if (this.ground) this.goalPos.y = Math.max(this.goalPos.y, this.ground(this.goalPos.x, this.goalPos.z) + 0.4);
         if (this.unblock) this.goalPos.copy(this.unblock(this.goalPos, discPos));
-        this.goalLook.copy(discPos).addScaledVector(this.fdir, 1.6);
-        this.pos.lerp(this.goalPos, k(4.5));
+        this.goalLook.copy(discPos).addScaledVector(this.fdir, 1.1);
+        this.pos.lerp(this.goalPos, k(6));
         this.look.lerp(this.goalLook, k(9));
         this.fov += (this.goalFov - this.fov) * k(2);
         this.up.lerp(this.goalUp, k(6)).normalize();

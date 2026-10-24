@@ -278,14 +278,14 @@ export class Screens {
         text: 'ディスクの<b>うしろ</b>からの視点で、<b>2本指でドラッグ</b>するとディスクが回るよ（PCは右ドラッグ／Shift＋ドラッグ／矢印キー）。<br><b>上下</b>＝投げる角度、<b>左右・ひねる</b>＝傾き。傾きはぐるっと360°まわせる！<br>傾けたほうへカーブするよ。',
       },
       {
-        title: 'スワイプで投げる',
+        title: '引っぱって投げる',
         img: svgSwipe(),
-        text: 'ディスクを<b>1本指</b>でなぞって投げる！<br><b>スワイプの向き</b>＝飛ぶ方向（ディスクの中心を通る平行な向き）<br><b>スワイプの速さ</b>＝パワー',
+        text: 'ディスクを<b>1本指でつかんで、うしろに引っぱって離す</b>！<br><b>引っぱった反対の向き</b>に飛ぶよ（ディスクの中心を通る平行な向き）<br><b>引っぱる長さ</b>＝パワー。指を戻して離すとキャンセル',
       },
       {
         title: '回転がカギ！',
         img: svgSpin(),
-        text: 'ディスクの<b>中心からズラしてなぞるほど回転が増える</b>よ。<br>中心をなぞると回転ゼロでフラフラ…すぐ落ちちゃう。<br>右側をなぞると左回り、左側だと右回り。回転の向きで<b>終わりぎわに曲がる方向</b>が変わる！',
+        text: 'ディスクの<b>中心からズレたところをつかむほど回転が増える</b>よ。<br>まん中をつかむと回転ゼロでフラフラ…すぐ落ちちゃう。<br>右側をつかむと左回り、左側だと右回り。回転の向きで<b>終わりぎわに曲がる方向</b>が変わる！',
       },
       {
         title: 'ディスクと風',
@@ -332,7 +332,7 @@ export class Screens {
         <div class="settings-card">
           <div class="set-row"><div><b>BGM</b></div><input type="range" min="0" max="1" step="0.05" value="${st.bgm}" data-r="bgm"></div>
           <div class="set-row"><div><b>効果音</b></div><input type="range" min="0" max="1" step="0.05" value="${st.sfx}" data-r="sfx"></div>
-          <div class="set-row"><div><b>スワイプ感度</b><small>強く投げにくいときは上げてね</small></div><input type="range" min="0.5" max="2" step="0.05" value="${st.sensitivity}" data-r="sensitivity"></div>
+          <div class="set-row"><div><b>引っぱり感度</b><small>強く投げにくいときは上げてね</small></div><input type="range" min="0.5" max="2" step="0.05" value="${st.sensitivity}" data-r="sensitivity"></div>
           <div class="set-row"><div><b>画質</b><small>動作が重いときは「ひくい」に</small></div><div class="segs">${q('low', 'ひくい')}${q('mid', 'ふつう')}${q('high', 'たかい')}</div></div>
           ${tog('slowmo', 'スロー演出', 'バスケット付近でスローモーション')}
           ${tog('ghost', '前回の軌道', '1つ前のショットの軌道を表示')}
@@ -528,13 +528,12 @@ function svgTilt(): string {
 
 function svgSwipe(): string {
   return svgWrap(`<rect width="320" height="180" rx="18" fill="#7fd860"/>
-    <circle cx="160" cy="100" r="54" fill="#ff4f5e" stroke="${INK}" stroke-width="5"/><circle cx="160" cy="100" r="36" fill="none" stroke="#fff" stroke-width="4"/>
-    <circle cx="160" cy="100" r="4" fill="#fff"/>
-    <path d="M196 170 L 196 30" stroke="#fff" stroke-width="10" stroke-linecap="round" opacity="0.85"/><path d="M196 18 l-14 20 h28 z" fill="#fff"/>
-    <line x1="160" y1="100" x2="196" y2="100" stroke="#ffd23f" stroke-width="4" stroke-dasharray="5 5"/>
-    <path d="M160 160 L 160 20" stroke="#ffd23f" stroke-width="4" stroke-dasharray="10 8"/>
-    <text x="210" y="96" font-size="15" font-weight="900" fill="${INK}">ズレ＝回転</text><text x="206" y="150" font-size="15" font-weight="900" fill="${INK}">速さ＝パワー</text>
-    <text x="22" y="40" font-size="15" font-weight="900" fill="${INK}">中心を通る</text><text x="22" y="58" font-size="15" font-weight="900" fill="${INK}">平行な向きへ</text>`);
+    <path d="M160 92 L 160 10" stroke="#ffd23f" stroke-width="4" stroke-dasharray="10 8"/><path d="M160 4 l-10 14 h20 z" fill="#ffd23f"/>
+    <path d="M128 62 L 182 150 L 192 62" stroke="#ff9a3c" stroke-width="5" fill="none" stroke-linejoin="round"/>
+    <circle cx="160" cy="62" r="34" fill="#ff5a2a" stroke="${INK}" stroke-width="5"/><circle cx="160" cy="62" r="20" fill="#4f7dff"/>
+    <circle cx="182" cy="150" r="12" fill="#fff" stroke="${INK}" stroke-width="3"/>
+    <text x="200" y="120" font-size="15" font-weight="900" fill="${INK}">引っぱる長さ</text><text x="200" y="138" font-size="15" font-weight="900" fill="${INK}">＝パワー</text>
+    <text x="16" y="40" font-size="15" font-weight="900" fill="${INK}">反対の向きへ</text><text x="16" y="58" font-size="15" font-weight="900" fill="${INK}">ビューン！</text>`);
 }
 
 function svgSpin(): string {

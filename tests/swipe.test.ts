@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeSwipe, swipeSpeed, type SwipeSample } from '../src/game/swipe';
+import { analyzePull, analyzeSwipe, swipeSpeed, type SwipeSample } from '../src/game/swipe';
 
 const R = 0.13;
 const FULL = 21;
@@ -79,5 +79,36 @@ describe('swipe analysis', () => {
 
   it('ignores taps', () => {
     expect(analyzeSwipe(line(0, 0, 0.01, 0, 50), 0, 0, R, FULL).reason).toBe('tap');
+  });
+});
+
+describe('pull (slingshot) analysis', () => {
+  it('flies opposite to the pull', () => {
+    // grab the centre, pull back toward +z → throw toward -z
+    const a = analyzePull(0, 0, 0, 0.3, 0, 0, R, 0.02);
+    expect(a.ok).toBe(true);
+    expect(a.dirX).toBeCloseTo(0, 6);
+    expect(a.dirZ).toBeCloseTo(-1, 6);
+    expect(a.spinFactor).toBeCloseTo(0, 6);
+  });
+
+  it('grabbing off-centre adds spin, side sets the direction', () => {
+    const right = analyzePull(0.08, 0, 0.08, 0.3, 0, 0, R, 0.02);
+    const left = analyzePull(-0.08, 0, -0.08, 0.3, 0, 0, R, 0.02);
+    expect(right.spinFactor).toBeCloseTo(0.08 / R, 5);
+    expect(right.spinSign).toBe(1);
+    expect(left.spinSign).toBe(-1);
+  });
+
+  it('launch line is parallel to the pull through the centre', () => {
+    const a = analyzePull(0.05, 0.02, 0.05 + 0.1, 0.02 + 0.3, 0, 0, R, 0.02);
+    const len = Math.hypot(0.1, 0.3);
+    expect(a.dirX).toBeCloseTo(-0.1 / len, 6);
+    expect(a.dirZ).toBeCloseTo(-0.3 / len, 6);
+  });
+
+  it('rejects grabs away from the disc and tiny pulls', () => {
+    expect(analyzePull(0.5, 0, 0.5, 0.3, 0, 0, R, 0.02).reason).toBe('off');
+    expect(analyzePull(0, 0, 0, 0.01, 0, 0, R, 0.02).reason).toBe('short');
   });
 });

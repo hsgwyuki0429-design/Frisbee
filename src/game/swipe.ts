@@ -161,3 +161,64 @@ function distToSeg(px: number, pz: number, a: SwipeSample, b: SwipeSample): numb
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(px - (a.x + abx * t), pz - (a.z + abz * t));
 }
+
+export interface PullAnalysis {
+  ok: boolean;
+  reason?: 'off' | 'short';
+  /** Launch direction (opposite to the pull), unit. */
+  dirX: number;
+  dirZ: number;
+  /** Distance of the launch line (through the grab point) from the centre, in disc radii. */
+  offset: number;
+  spinSign: number;
+  spinFactor: number;
+  /** Closest point of the launch line to the centre. */
+  footX: number;
+  footZ: number;
+}
+
+/**
+ * Slingshot throw: grab the disc at (gx, gz), pull back to (rx, rz) and let go.
+ * The disc flies opposite to the pull, parallel to it and through its centre;
+ * the further the grab point's line passes from the centre, the more spin.
+ * `minPull` is the shortest pull (metres on the plane) that counts as a throw.
+ */
+export function analyzePull(
+  gx: number,
+  gz: number,
+  rx: number,
+  rz: number,
+  cx: number,
+  cz: number,
+  radius: number,
+  minPull: number,
+): PullAnalysis {
+  const res: PullAnalysis = { ok: false, dirX: 0, dirZ: -1, offset: 0, spinSign: 0, spinFactor: 0, footX: cx, footZ: cz };
+  if (Math.hypot(gx - cx, gz - cz) > radius * 1.35) {
+    res.reason = 'off';
+    return res;
+  }
+  const px = rx - gx;
+  const pz = rz - gz;
+  const len = Math.hypot(px, pz);
+  if (len < minPull) {
+    res.reason = 'short';
+    return res;
+  }
+  const dx = -px / len;
+  const dz = -pz / len;
+  res.dirX = dx;
+  res.dirZ = dz;
+  const along = (cx - gx) * dx + (cz - gz) * dz;
+  res.footX = gx + dx * along;
+  res.footZ = gz + dz * along;
+  const ox = res.footX - cx;
+  const oz = res.footZ - cz;
+  res.offset = Math.hypot(ox, oz) / radius;
+  res.spinFactor = Math.min(1, res.offset);
+  // Same rule as a swipe: a line right of centre spins the disc counter-clockwise from above.
+  const cross = oz * dx - ox * dz;
+  res.spinSign = Math.abs(cross) < 1e-12 ? 0 : cross > 0 ? 1 : -1;
+  res.ok = true;
+  return res;
+}
