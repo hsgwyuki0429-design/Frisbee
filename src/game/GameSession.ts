@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { audio, type TrackName } from '../audio/Audio';
 import { DISC_TYPES, discById, type DiscType } from '../data/discs';
 import { skinById } from '../data/skins';
+import { DISTANCE_FIELD_HALF } from '../data/stages';
 import type { StageDef } from '../data/types';
 import { DiscBody } from '../physics/DiscBody';
 import { applyLaunch } from '../physics/launch';
@@ -146,6 +147,7 @@ export class GameSession implements FXHub {
     this.world = new PhysicsWorld(this.disc);
     this.rig = new CameraRig(window.innerWidth / window.innerHeight);
     this.view = new DiscView(host.scene, skinById(s.skin));
+    this.view.setRadius(this.discType.spec.radius);
     this.particles = new Particles(host.scene);
     const hud = host.hud;
     if (config.mode !== 'demo') {
@@ -154,9 +156,6 @@ export class GameSession implements FXHub {
         canvas: host.canvas,
         layer: hud.aimLayer,
         sensitivity: () => host.settings().sensitivity,
-        onPhase: (p) => {
-          hud.showPicker(p !== 'swipe' && this.config.mode !== 'distance', this.discType.id);
-        },
         onThrow: (r) => this.launch(r),
         onMiss: (msg) => {
           hud.toast(msg, 1800);
@@ -251,6 +250,7 @@ export class GameSession implements FXHub {
     });
     this.level.attach(this.world);
     this.rig.ground = (x, z) => this.level!.groundY(x, z);
+    this.rig.unblock = (cam, target) => this.level!.cameraSafe(cam, target);
     audio.music(this.trackFor(this.stage));
 
     // Wind.
@@ -302,7 +302,7 @@ export class GameSession implements FXHub {
     for (let k = 0; k < pts.length; k++) pts[k] = lv.clearance(pts[k], 1.5);
     const looks = [goal.clone().add(new THREE.Vector3(0, 1, 0)), mid.clone(), tee.clone().addScaledVector(dir, 12)];
     const dur = this.config.mode === 'demo' ? 6 : Math.min(4.5, 2.4 + len / 60);
-    this.rig.snap(pts[0], looks[0], 55);
+    this.rig.snap(pts[0], looks[0], 64);
     this.rig.path(pts, looks, dur, () => this.finishIntro());
 
     if (this.config.mode === 'demo') return;
@@ -332,7 +332,7 @@ export class GameSession implements FXHub {
     if (this.state !== 'intro') return;
     this.host.hud.hideBanner();
     if (!save().tutorialDone && this.config.mode === 'course') {
-      this.host.hud.toast('① 横から見て<b>投げる角度</b> → ② 後ろから<b>傾き</b> → ③ 上から<b>スワイプ</b>で投げよう！', 5200);
+      this.host.hud.toast('<b>2本指ドラッグ</b>で角度と傾き → ディスクを<b>スワイプ</b>して投げよう！', 5200);
       updateSave((d) => (d.tutorialDone = true));
     }
     this.beginAim();
@@ -388,10 +388,11 @@ export class GameSession implements FXHub {
     // Suggest a disc for the distance unless the player picked one this hole.
     const dist = this.goalPoint().setY(0).distanceTo(this.origin.clone().setY(0));
     if (!this.manualDisc && this.config.mode !== 'distance') {
-      const id = dist < 14 ? 'putter' : dist < 55 ? 'midrange' : 'driver';
+      const id = dist < 12 ? 'putter' : dist < 36 ? 'midrange' : 'driver';
       this.pickDisc(discById(id), false);
     }
     this.input!.begin(this.origin, this.aimDir(), this.discType, lv.groundY(this.origin.x, this.origin.z));
+    this.host.hud.showPicker(true, this.discType.id);
     this.updateHud();
     this.drawMap(null);
   }
@@ -425,7 +426,8 @@ export class GameSession implements FXHub {
     this.world = w;
     this.level!.attach(w);
     this.input?.setDisc(d);
-    this.host.hud.showPicker(this.input?.phase !== 'swipe', d.id);
+    this.view.setRadius(d.spec.radius);
+    this.host.hud.showPicker(this.config.mode !== 'demo', d.id);
     if (manual) this.host.hud.toast(`${d.name}：${d.description}`, 2000);
   }
 
@@ -484,7 +486,8 @@ export class GameSession implements FXHub {
     const restPos = new THREE.Vector3(this.disc.x, this.disc.y, this.disc.z);
     const thrown = Math.hypot(restPos.x - this.origin.x, restPos.z - this.origin.z);
     if (reason !== 'water' && reason !== 'ob') updateSave((s) => (s.stats.longest = Math.max(s.stats.longest, thrown)));
-    this.rig.orbit(reason === 'basket' && this.basketPosFor() ? this.basketPosFor()! : restPos, 6, 2.6, Math.atan2(this.origin.z - restPos.z, this.origin.x - restPos.x), 0.25);
+    const center = reason === 'basket' && this.basketPosFor() ? this.basketPosFor()! : restPos;
+    this.rig.orbit(center, 4, 1.8, this.clearOrbitAngle(center, Math.atan2(this.origin.z - restPos.z, this.origin.x - restPos.x)), 0.25);
     this.stateTimer = 1.6;
 
     switch (this.config.mode) {
@@ -508,6 +511,17 @@ export class GameSession implements FXHub {
         this.endRingThrow(reason);
         break;
     }
+  }
+
+  /** Orbit start angle near `preferred` from which nothing hides the target. */
+  private clearOrbitAngle(center: THREE.Vector3, preferred: number): number {
+    const lv = this.level!;
+    for (let i = 0; i < 12; i++) {
+      const a = preferred + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI / 6);
+      const cam = new THREE.Vector3(center.x + Math.cos(a) * 4, center.y + 1.8, center.z + Math.sin(a) * 4);
+      if (!lv.lineBlocked(cam, center.clone().add(new THREE.Vector3(0, 0.2, 0)))) return a;
+    }
+    return preferred;
   }
 
   private basketPosFor(): THREE.Vector3 | null {
@@ -681,7 +695,7 @@ export class GameSession implements FXHub {
     const hud = this.host.hud;
     const tee = this.stage.tee;
     const fwd = tee[1] - rest.z;
-    const inField = Math.abs(rest.x - tee[0]) < 31;
+    const inField = Math.abs(rest.x - tee[0]) < DISTANCE_FIELD_HALF;
     let d = 0;
     if (reason === 'water' || reason === 'ob' || !inField) {
       this.obMessage(reason === 'rest' ? 'ob' : (reason as 'water' | 'ob'));
@@ -758,9 +772,9 @@ export class GameSession implements FXHub {
     const lines: string[] = [];
     if (mode === 'distance') {
       score = Math.round(this.bestThrow * 10) / 10;
-      medal = score >= 110 ? 3 : score >= 80 ? 2 : score >= 50 ? 1 : 0;
+      medal = score >= 45 ? 3 : score >= 35 ? 2 : score >= 25 ? 1 : 0;
       unit = 'm';
-      lines.push('🥉 50m　🥈 80m　🥇 110m');
+      lines.push('🥉 25m　🥈 35m　🥇 45m');
     } else if (mode === 'target') {
       score = this.scoreTotal;
       medal = score >= 350 ? 3 : score >= 250 ? 2 : score >= 150 ? 1 : 0;
@@ -957,13 +971,13 @@ export class GameSession implements FXHub {
   private demoThrow(): void {
     const g = this.goalPoint();
     const D = Math.hypot(g.x - this.origin.x, g.z - this.origin.z);
-    const dt = DISC_TYPES[D < 25 ? 0 : D < 60 ? 1 : 2];
+    const dt = DISC_TYPES[D < 12 ? 0 : D < 36 ? 1 : 2];
     if (dt.id !== this.discType.id) this.pickDisc(dt, false);
     const aim = this.aimDir();
     const jitter = (this.rnd() - 0.5) * 0.12;
     const hx = aim.x * Math.cos(jitter) - aim.y * Math.sin(jitter);
     const hz = aim.x * Math.sin(jitter) + aim.y * Math.cos(jitter);
-    const speed = Math.min(dt.maxSpeed, 7 + Math.sqrt(D) * 2.2);
+    const speed = Math.min(dt.maxSpeed, 4 + Math.sqrt(D) * 1.7);
     const res: ThrowResult = {
       hx,
       hz,

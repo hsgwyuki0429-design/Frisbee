@@ -44,7 +44,7 @@ export function fly(discIdx: number, speed: number, angleDeg: number, tiltDeg: n
 
 if (process.argv[1] && process.argv[1].includes('simflight')) {
   const cases: [number, number, number, number, number, string][] = [];
-  for (const [di, v] of [[0, 15], [1, 21], [2, 27]] as [number, number][]) {
+  for (const [di, v] of DISC_TYPES.map((d, i) => [i, d.maxSpeed] as [number, number])) {
     cases.push([di, v, 8, 0, -0.5, 'flat CW']);
     cases.push([di, v, 8, 0, 0.5, 'flat CCW']);
     cases.push([di, v, 8, -20, -0.5, 'hyzer(L) CW']);

@@ -61,6 +61,8 @@ export class DiscBody {
   /** Extra drag rates (1/s) applied by volumes such as foliage or basket chains. */
   zoneLinDrag = 0;
   zoneAngDrag = 0;
+  /** Soft foam discs give a dead bounce. */
+  restitutionScale = 0.6;
 
   // Derived quantities, refreshed by refresh().
   readonly n: Vec3Like = { x: 0, y: 1, z: 0 };

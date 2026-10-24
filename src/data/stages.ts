@@ -1,4 +1,4 @@
-import type { ObjDef, StageDef } from './types';
+import type { ObjDef, StageDef, XYZ, XZ } from './types';
 
 export interface WorldDef {
   id: string;
@@ -362,10 +362,48 @@ const h9: StageDef = {
   ],
 };
 
+// ------------------------------------------------------------------ Scaling
+
+/**
+ * The layouts above were drawn for long disc-golf drives. Foam discs fly
+ * shorter, so every stage is compressed by this factor: positions, land and
+ * terrain features shrink, while props keep their real size.
+ */
+const MAP_SCALE = 0.6;
+
+function scaleStage(d: StageDef, k = MAP_SCALE): StageDef {
+  const xz = (p: XZ): XZ => [p[0] * k, p[1] * k];
+  const xyz = (p: XYZ): XYZ => [p[0] * k, p[1], p[2] * k];
+  const r = (v: number, min: number) => Math.max(min, v * k);
+  // Beaches have a wide sloping shore, so thin strips need more width to stay above water.
+  const beach = d.theme === 'beach';
+  return {
+    ...d,
+    tee: xz(d.tee),
+    basket: d.basket && xz(d.basket),
+    extraBaskets: d.extraBaskets?.map(xz),
+    land: d.land.map((l) =>
+      l.kind === 'path' ? { ...l, pts: l.pts.map(xz), width: r(l.width, beach ? 10 : 4) } : { ...l, x: l.x * k, z: l.z * k, r: r(l.r, beach ? 9 : 6) },
+    ),
+    hills: d.hills?.map((h) => ({ x: h.x * k, z: h.z * k, r: r(h.r, 5), h: h.h * 0.8 })),
+    ponds: d.ponds?.map((p) => ({ x: p.x * k, z: p.z * k, r: r(p.r, 5) })),
+    sand: d.sand?.map((p) => ({ x: p.x * k, z: p.z * k, r: r(p.r, 3) })),
+    rough: d.rough?.map((p) => ({ x: p.x * k, z: p.z * k, r: r(p.r, 4) })),
+    fairway: d.fairway && { pts: d.fairway.pts.map(xz), width: Math.max(5, d.fairway.width * 0.75) },
+    // Light discs drift a lot, so the breeze is gentler too.
+    wind: [d.wind[0] * 0.5, d.wind[1] * 0.5],
+    objects: d.objects.map((o): ObjDef => {
+      if (o.t === 'coins') return { ...o, from: xyz(o.from), to: xyz(o.to) };
+      if (o.t === 'flowers') return { ...o, x: o.x * k, z: o.z * k, r: r(o.r, 2) };
+      return { ...o, x: o.x * k, z: o.z * k } as ObjDef;
+    }),
+  };
+}
+
 export const WORLDS: WorldDef[] = [
-  { id: 'w1', name: 'はらっぱアイランド', sub: 'GRASSLAND', theme: 'grass', color: '#5fcd3c', holes: [h1, h2, h3] },
-  { id: 'w2', name: 'サンサンビーチ', sub: 'SUNNY BEACH', theme: 'beach', color: '#29b6f6', holes: [h4, h5, h6] },
-  { id: 'w3', name: 'くものうえ', sub: 'SKY ISLANDS', theme: 'sky', color: '#b47bff', holes: [h7, h8, h9] },
+  { id: 'w1', name: 'はらっぱアイランド', sub: 'GRASSLAND', theme: 'grass', color: '#5fcd3c', holes: [h1, h2, h3].map((h) => scaleStage(h)) },
+  { id: 'w2', name: 'サンサンビーチ', sub: 'SUNNY BEACH', theme: 'beach', color: '#29b6f6', holes: [h4, h5, h6].map((h) => scaleStage(h)) },
+  { id: 'w3', name: 'くものうえ', sub: 'SKY ISLANDS', theme: 'sky', color: '#b47bff', holes: [h7, h8, h9].map((h) => scaleStage(h)) },
 ];
 
 export const ALL_HOLES = WORLDS.flatMap((w) => w.holes);
@@ -373,35 +411,37 @@ export const ALL_HOLES = WORLDS.flatMap((w) => w.holes);
 // ------------------------------------------------------------------ Challenges
 
 const markers: ObjDef[] = [];
-for (let d = 20; d <= 180; d += 20) {
-  markers.push({ t: 'marker', x: 17, z: -d, text: `${d}`, c: d % 50 === 0 ? 0xff4f6d : 0x4a8fe0 });
-  markers.push({ t: 'marker', x: -17, z: -d, text: `${d}`, c: d % 50 === 0 ? 0xff4f6d : 0x4a8fe0 });
+for (let d = 10; d <= 70; d += 10) {
+  const c = d % 20 === 0 ? 0xff4f6d : 0x4a8fe0;
+  markers.push({ t: 'marker', x: 11, z: -d, text: `${d}`, c }, { t: 'marker', x: -11, z: -d, text: `${d}`, c });
 }
+
+/** Half width of the long-drive field (throws landing outside are OB). */
+export const DISTANCE_FIELD_HALF = 19;
 
 export const DISTANCE_STAGE: StageDef = {
   id: 'ch-distance',
   name: 'ロングドライブ',
   theme: 'grass',
   tee: [0, 0],
-  land: [{ kind: 'path', pts: [[0, 16], [0, -190]], width: 64 }],
-  fairway: { pts: [[0, -3], [0, -185]], width: 30 },
-  wind: [0, 2.5],
+  land: [{ kind: 'path', pts: [[0, 12], [0, -82]], width: 42 }],
+  fairway: { pts: [[0, -3], [0, -78]], width: 18 },
+  wind: [0, 1.2],
   windDir: Math.PI,
   seed: 5,
   decor: 0.6,
   objects: [
     ...markers,
-    { t: 'tree', x: -26, z: -30 },
-    { t: 'tree', x: 26, z: -50 },
-    { t: 'tree', x: -27, z: -80, v: 'pine' },
-    { t: 'tree', x: 27, z: -110 },
-    { t: 'tree', x: -26, z: -140 },
-    { t: 'tree', x: 26, z: -165, v: 'pine' },
-    { t: 'ring', x: 0, y: 4, z: -40, v: 'boost' },
+    { t: 'tree', x: -16, z: -18 },
+    { t: 'tree', x: 16, z: -30 },
+    { t: 'tree', x: -16, z: -46, v: 'pine' },
+    { t: 'tree', x: 16, z: -62 },
+    { t: 'tree', x: -15, z: -74, v: 'pine' },
+    { t: 'ring', x: 0, y: 3, z: -16, v: 'boost' },
   ],
 };
 
-export const TARGET_STAGE: StageDef = {
+export const TARGET_STAGE: StageDef = scaleStage({
   id: 'ch-target',
   name: 'まとあて',
   theme: 'beach',
@@ -411,34 +451,34 @@ export const TARGET_STAGE: StageDef = {
   seed: 9,
   decor: 0.5,
   objects: [
-    { t: 'target', x: 0, z: -12, r: 3 },
-    { t: 'target', x: -7, z: -24, r: 3.5 },
-    { t: 'target', x: 8, z: -37, r: 4 },
-    { t: 'target', x: -10, z: -51, r: 4.5 },
-    { t: 'target', x: 6, z: -66, r: 5 },
-    { t: 'tree', x: -18, z: -14, v: 'palm' },
-    { t: 'tree', x: 18, z: -30, v: 'palm' },
-    { t: 'tree', x: -20, z: -60, v: 'palm' },
-    { t: 'tree', x: 20, z: -70, v: 'palm' },
-    { t: 'umbrella', x: 14, z: 2 },
-    { t: 'umbrella', x: -14, z: -4, c: 0x3fa9ff },
+    { t: 'target', x: 0, z: -12, r: 2.4 },
+    { t: 'target', x: -7, z: -24, r: 2.8 },
+    { t: 'target', x: 8, z: -37, r: 3.2 },
+    { t: 'target', x: -10, z: -51, r: 3.6 },
+    { t: 'target', x: 6, z: -66, r: 4 },
+    { t: 'tree', x: -22, z: -14, v: 'palm' },
+    { t: 'tree', x: 22, z: -30, v: 'palm' },
+    { t: 'tree', x: -24, z: -60, v: 'palm' },
+    { t: 'tree', x: 22, z: -74, v: 'palm' },
+    { t: 'umbrella', x: 16, z: 2 },
+    { t: 'umbrella', x: -16, z: -4, c: 0x3fa9ff },
   ],
-};
+});
 
 const ringPath: [number, number, number][] = [
-  [0, 3, -12],
-  [-3, 4, -22],
-  [-7, 5, -32],
-  [-9, 5, -42],
-  [-7, 4.5, -52],
-  [-2, 4, -60],
-  [4, 4, -68],
-  [8, 3.5, -77],
-  [9, 3, -87],
-  [6, 2.6, -97],
+  [0, 2.6, -12],
+  [-3, 3.2, -22],
+  [-7, 3.6, -32],
+  [-9, 3.6, -42],
+  [-7, 3.4, -52],
+  [-2, 3.2, -60],
+  [4, 3.2, -68],
+  [8, 3, -77],
+  [9, 2.8, -87],
+  [6, 2.4, -97],
 ];
 
-export const RING_STAGE: StageDef = {
+export const RING_STAGE: StageDef = scaleStage({
   id: 'ch-rings',
   name: 'リングくぐり',
   theme: 'sky',
@@ -454,14 +494,14 @@ export const RING_STAGE: StageDef = {
     ...ringPath.map((p, i): ObjDef => {
       const n = ringPath[Math.min(ringPath.length - 1, i + 1)];
       const pr = ringPath[Math.max(0, i - 1)];
-      return { t: 'ring', x: p[0], y: p[1], z: p[2], r: 1.9, yaw: yawOf(n[0] - pr[0], n[2] - pr[2]) };
+      return { t: 'ring', x: p[0], y: p[1], z: p[2], r: 1.7, yaw: yawOf(n[0] - pr[0], n[2] - pr[2]) };
     }),
-    { t: 'tree', x: 12, z: -30 },
-    { t: 'tree', x: -18, z: -60 },
-    { t: 'tree', x: 16, z: -96 },
-    { t: 'cloudpad', x: -16, y: 0.4, z: -20, r: 5 },
+    { t: 'tree', x: 14, z: -30 },
+    { t: 'tree', x: -20, z: -60 },
+    { t: 'tree', x: 18, z: -96 },
+    { t: 'cloudpad', x: -20, y: 0.4, z: -20, r: 4 },
   ],
-};
+});
 
 export const PRACTICE_STAGE: StageDef = {
   id: 'practice',
@@ -469,30 +509,28 @@ export const PRACTICE_STAGE: StageDef = {
   theme: 'grass',
   tee: [0, 0],
   extraBaskets: [
-    [0, -12],
-    [-9, -30],
-    [12, -52],
-    [-6, -80],
+    [0, -8],
+    [-6, -18],
+    [8, -30],
+    [-4, -44],
   ],
-  land: [
-    { kind: 'path', pts: [[0, 16], [0, -110]], width: 80 },
-  ],
-  fairway: { pts: [[0, -3], [0, -100]], width: 20 },
+  land: [{ kind: 'path', pts: [[0, 12], [0, -62]], width: 52 }],
+  fairway: { pts: [[0, -3], [0, -58]], width: 14 },
   wind: [0, 0],
   seed: 3,
   decor: 0.7,
   objects: [
-    { t: 'tree', x: -24, z: -20 },
-    { t: 'tree', x: 26, z: -34 },
-    { t: 'tree', x: -28, z: -64, v: 'pine' },
-    { t: 'tree', x: 28, z: -78 },
-    { t: 'mushroom', x: 18, z: -14 },
-    { t: 'flowers', x: -10, z: -8, r: 4, n: 16 },
-    ...[25, 50, 75, 100].flatMap((d): ObjDef[] => [
-      { t: 'marker', x: 22, z: -d, text: `${d}`, c: 0x4a8fe0 },
-      { t: 'marker', x: -22, z: -d, text: `${d}`, c: 0x4a8fe0 },
+    { t: 'tree', x: -17, z: -12 },
+    { t: 'tree', x: 18, z: -22 },
+    { t: 'tree', x: -18, z: -38, v: 'pine' },
+    { t: 'tree', x: 18, z: -48 },
+    { t: 'mushroom', x: 13, z: -9 },
+    { t: 'flowers', x: -8, z: -6, r: 3, n: 14 },
+    ...[10, 20, 30, 40, 50].flatMap((d): ObjDef[] => [
+      { t: 'marker', x: 14, z: -d, text: `${d}`, c: 0x4a8fe0 },
+      { t: 'marker', x: -14, z: -d, text: `${d}`, c: 0x4a8fe0 },
     ]),
   ],
 };
 
-export const TITLE_STAGE: StageDef = { ...h1, id: 'title' };
+export const TITLE_STAGE: StageDef = { ...WORLDS[0].holes[0], id: 'title' };

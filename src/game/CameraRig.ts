@@ -9,6 +9,8 @@ export class CameraRig {
   readonly camera: THREE.PerspectiveCamera;
   mode: Mode = 'pose';
   ground: ((x: number, z: number) => number) | null = null;
+  /** Moves a camera point out of foliage toward what it is looking at. */
+  unblock: ((cam: THREE.Vector3, target: THREE.Vector3) => THREE.Vector3) | null = null;
 
   private pos = new THREE.Vector3(0, 5, 10);
   private look = new THREE.Vector3();
@@ -94,7 +96,7 @@ export class CameraRig {
     this.disc = disc;
     this.fdir.copy(dir).setY(0).normalize();
     this.goalUp.set(0, 1, 0);
-    this.goalFov = 58;
+    this.goalFov = 68;
   }
 
   orbit(center: THREE.Vector3, radius: number, height: number, startAngle: number, speed = 0.15): void {
@@ -105,7 +107,7 @@ export class CameraRig {
     this.orbitAngle = startAngle;
     this.orbitSpeed = speed;
     this.goalUp.set(0, 1, 0);
-    this.goalFov = 55;
+    this.goalFov = 64;
   }
 
   path(points: THREE.Vector3[], looks: THREE.Vector3[], duration: number, onDone?: () => void): void {
@@ -146,13 +148,15 @@ export class CameraRig {
         const sp = Math.hypot(d.vx, d.vy, d.vz);
         if (v.lengthSq() > 0.5) this.fdir.lerp(v.normalize(), k(sp > 4 ? 2.2 : 0.6)).normalize();
         const discPos = new THREE.Vector3(d.x, d.y, d.z);
-        const dist = 3.6 + Math.min(sp, 30) * 0.1;
-        const height = 1.3 + Math.min(sp, 30) * 0.04;
+        // Close behind the frisbee so its wobble and curve are easy to follow.
+        const dist = 1.9 + Math.min(sp, 20) * 0.08;
+        const height = 0.75 + Math.min(sp, 20) * 0.03;
         this.goalPos.copy(discPos).addScaledVector(this.fdir, -dist);
         this.goalPos.y += height;
-        if (this.ground) this.goalPos.y = Math.max(this.goalPos.y, this.ground(this.goalPos.x, this.goalPos.z) + 1.2);
-        this.goalLook.copy(discPos).addScaledVector(this.fdir, 2.5);
-        this.pos.lerp(this.goalPos, k(3.2));
+        if (this.ground) this.goalPos.y = Math.max(this.goalPos.y, this.ground(this.goalPos.x, this.goalPos.z) + 0.6);
+        if (this.unblock) this.goalPos.copy(this.unblock(this.goalPos, discPos));
+        this.goalLook.copy(discPos).addScaledVector(this.fdir, 1.6);
+        this.pos.lerp(this.goalPos, k(4.5));
         this.look.lerp(this.goalLook, k(9));
         this.fov += (this.goalFov - this.fov) * k(2);
         this.up.lerp(this.goalUp, k(6)).normalize();

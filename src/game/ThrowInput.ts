@@ -4,8 +4,6 @@ import { launchFrame } from '../physics/launch';
 import type { CameraRig } from './CameraRig';
 import { analyzeSwipe, powerFromSpeed, swipeSpeed, type SwipeSample } from './swipe';
 
-export type AimPhase = 'angle' | 'tilt' | 'swipe';
-
 export interface ThrowResult {
   /** Horizontal heading (unit). */
   hx: number;
@@ -26,7 +24,6 @@ export interface ThrowInputDeps {
   canvas: HTMLCanvasElement;
   layer: HTMLElement;
   sensitivity: () => number;
-  onPhase: (p: AimPhase) => void;
   onThrow: (r: ThrowResult) => void;
   onMiss: (reason: string) => void;
   onAimPreview?: (hx: number, hz: number) => void;
@@ -37,11 +34,11 @@ export interface ThrowInputDeps {
   onPose: (quat: [number, number, number, number]) => void;
 }
 
-const ANGLE_MIN = -10;
-const ANGLE_MAX = 50;
-const TILT_MAX = 60;
-const VISUAL_R = 0.106 * 1.25;
-const PHYS_R = 0.106;
+const ANGLE_MIN = -60;
+const ANGLE_MAX = 85;
+const DEFAULT_ANGLE = 10;
+/** Drawn disc size relative to its physical radius (matches DiscView). */
+const VISUAL_SCALE = 1.1;
 
 interface Pt {
   x: number;
@@ -49,9 +46,18 @@ interface Pt {
   t: number;
 }
 
+type Mode = 'none' | 'swipe' | 'orient';
+
+const wrap180 = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
+
+/**
+ * Aiming and throwing from a single view behind the disc.
+ * - Two-finger drag (or right-drag / Shift-drag / arrow keys) turns the disc:
+ *   vertical = launch angle, horizontal or twisting = tilt (all the way round).
+ * - One-finger swipe across the disc throws it.
+ */
 export class ThrowInput {
-  phase: AimPhase = 'angle';
-  angleDeg = 10;
+  angleDeg = DEFAULT_ANGLE;
   tiltDeg = 0;
   active = false;
 
@@ -61,24 +67,31 @@ export class ThrowInput {
   private overlay: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private panel: HTMLDivElement;
+  private sideGauge!: HTMLCanvasElement;
+  private backGauge!: HTMLCanvasElement;
+  private readout!: HTMLDivElement;
   private helpers = new THREE.Group();
   private arrow: THREE.Group;
-  private arc: THREE.Mesh;
-  private horizon: THREE.Line;
   private aimLine: THREE.Mesh;
   private previewLine: THREE.Mesh;
-  private dragging = false;
-  private lastX = 0;
-  private lastY = 0;
+  private pointers = new Map<number, { x: number; y: number }>();
+  private mode: Mode = 'none';
+  private orientPrev: { cx: number; cy: number; ang: number } | null = null;
+  private accA = 0;
+  private accT = 0;
   private swipePts: Pt[] = [];
   private swipeFade: { pts: Pt[]; until: number; offset?: [Pt, Pt]; label?: string; color: string } | null = null;
   private pointerType = 'mouse';
   private livePower = 0;
   private raf = 0;
+  private hintDone = new Set<'orient' | 'swipe'>();
+  /** Diagnostics for the most recent swipe (inspected by automated tests). */
+  lastSwipe: { pts: number[][]; dd: number; offset: number } | null = null;
   private boundDown = (e: PointerEvent) => this.down(e);
   private boundMove = (e: PointerEvent) => this.move(e);
   private boundUp = (e: PointerEvent) => this.up(e);
   private boundKey = (e: KeyboardEvent) => this.key(e);
+  private boundMenu = (e: Event) => e.preventDefault();
 
   constructor(
     private scene: THREE.Scene,
@@ -91,31 +104,20 @@ export class ThrowInput {
     this.panel = document.createElement('div');
     this.panel.className = 'aim-panel hidden';
     deps.layer.appendChild(this.panel);
+    this.buildPanel();
 
-    // Launch arrow.
-    const arrowMat = new THREE.MeshBasicMaterial({ color: 0xff4f6d, depthTest: false, transparent: true });
+    // Launch arrow along the current throwing direction.
+    const arrowMat = new THREE.MeshBasicMaterial({ color: 0xff4f6d, depthTest: false, transparent: true, opacity: 0.85 });
     this.arrow = new THREE.Group();
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.0, 8), arrowMat);
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.7, 8), arrowMat);
     shaft.rotation.z = -Math.PI / 2;
     shaft.position.x = 0.5;
-    const head = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.16, 12), arrowMat);
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.12, 12), arrowMat);
     head.rotation.z = -Math.PI / 2;
-    head.position.x = 1.06;
+    head.position.x = 0.9;
     this.arrow.add(shaft, head);
-    this.arrow.renderOrder = 20;
     shaft.renderOrder = 20;
     head.renderOrder = 20;
-    this.arc = new THREE.Mesh(
-      new THREE.RingGeometry(0.42, 0.45, 32, 1, 0, 1),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.9 }),
-    );
-    this.arc.renderOrder = 19;
-    this.horizon = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.3, 0, 0), new THREE.Vector3(1.4, 0, 0)]),
-      new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.05, gapSize: 0.04, depthTest: false, transparent: true }),
-    );
-    this.horizon.computeLineDistances();
-    this.horizon.renderOrder = 19;
 
     const lineGeo = new THREE.PlaneGeometry(0.12, 1);
     lineGeo.translate(0, 0.5, 0);
@@ -124,15 +126,19 @@ export class ThrowInput {
     this.aimLine.renderOrder = 4;
     this.previewLine = new THREE.Mesh(lineGeo.clone(), new THREE.MeshBasicMaterial({ map: dashTexture('#ffd23f'), transparent: true, depthWrite: false }));
     this.previewLine.renderOrder = 4;
-    this.helpers.add(this.arrow, this.arc, this.horizon, this.aimLine, this.previewLine);
+    this.helpers.add(this.arrow, this.aimLine, this.previewLine);
     this.helpers.visible = false;
     scene.add(this.helpers);
 
     deps.canvas.addEventListener('pointerdown', this.boundDown);
+    deps.canvas.addEventListener('contextmenu', this.boundMenu);
     window.addEventListener('pointermove', this.boundMove);
     window.addEventListener('pointerup', this.boundUp);
     window.addEventListener('pointercancel', this.boundUp);
     window.addEventListener('keydown', this.boundKey);
+    // iOS Safari pinch/rotate gestures would otherwise zoom the page.
+    document.addEventListener('gesturestart', this.boundMenu);
+    document.addEventListener('gesturechange', this.boundMenu);
     this.resize();
     const loop = () => {
       this.raf = requestAnimationFrame(loop);
@@ -151,6 +157,10 @@ export class ThrowInput {
     if (this.active) this.applyCamera(0.2);
   }
 
+  private get visualR(): number {
+    return (this.disc?.spec.radius ?? 0.1175) * VISUAL_SCALE;
+  }
+
   /** Starts aiming from origin toward aim (horizontal). */
   begin(origin: THREE.Vector3, aim: THREE.Vector2, disc: DiscType, groundY: number): void {
     this.origin.copy(origin);
@@ -158,18 +168,20 @@ export class ThrowInput {
     this.disc = disc;
     this.active = true;
     this.helpers.visible = true;
-    // Aim line on the ground.
+    this.mode = 'none';
+    this.pointers.clear();
     const yaw = Math.atan2(this.aim.x, this.aim.y);
     this.aimLine.position.set(origin.x, groundY + 0.04, origin.z);
     this.aimLine.rotation.set(0, yaw + Math.PI, 0);
     this.aimLine.scale.set(1, 1, 14);
     this.previewLine.visible = false;
-    this.setPhase('angle', 0.9);
+    this.applyCamera(0.9);
+    this.updatePose();
+    this.panel.classList.remove('hidden');
   }
 
   setDisc(disc: DiscType): void {
     this.disc = disc;
-    this.renderPanel();
   }
 
   end(): void {
@@ -177,227 +189,244 @@ export class ThrowInput {
     this.helpers.visible = false;
     this.panel.classList.add('hidden');
     this.swipePts = [];
-    this.dragging = false;
-  }
-
-  setPhase(p: AimPhase, dur = 0.6): void {
-    this.phase = p;
-    this.deps.onPhase(p);
-    this.arrow.visible = p === 'angle';
-    this.arc.visible = p === 'angle';
-    this.horizon.visible = p === 'angle';
-    this.aimLine.visible = p === 'swipe';
-    this.previewLine.visible = false;
-    this.applyCamera(dur);
-    this.updatePose();
-    this.renderPanel();
-    this.panel.classList.remove('hidden');
-    this.panel.classList.toggle('swipe', p === 'swipe');
+    this.mode = 'none';
+    this.pointers.clear();
   }
 
   private frame() {
     return launchFrame(this.aim.x, this.aim.y, (this.angleDeg * Math.PI) / 180, (this.tiltDeg * Math.PI) / 180);
   }
 
+  /** Camera a little behind and above the disc, looking down the throwing line. */
   private applyCamera(dur: number): void {
     const o = this.origin;
-    const ax = this.aim.x;
-    const az = this.aim.y;
-    const right = new THREE.Vector3(-az, 0, ax);
-    const fwd = new THREE.Vector3(ax, 0, az);
-    const rig = this.deps.rig;
+    const fwd = new THREE.Vector3(this.aim.x, 0, this.aim.y);
     const portrait = window.innerHeight > window.innerWidth;
-    if (this.phase === 'angle') {
-      // Fit the disc and the 1 m launch arrow horizontally, whatever the aspect ratio.
-      const fov = portrait ? 52 : 45;
-      const aspect = window.innerWidth / window.innerHeight;
-      const dist = Math.max(1.5, 0.78 / (Math.tan(THREE.MathUtils.degToRad(fov / 2)) * aspect));
-      const pos = o.clone().addScaledVector(right, dist).addScaledVector(fwd, 0.42).add(new THREE.Vector3(0, 0.22, 0));
-      const look = o.clone().addScaledVector(fwd, 0.42).add(new THREE.Vector3(0, portrait ? 0.3 : 0.12, 0));
-      rig.setPose(pos, look, fov, dur);
-    } else if (this.phase === 'tilt') {
-      const f = this.frame().forward;
-      const fv = new THREE.Vector3(f[0], f[1], f[2]);
-      const dist = portrait ? 1.75 : 1.3;
-      const pos = o.clone().addScaledVector(fv, -dist).add(new THREE.Vector3(0, 0.08, 0));
-      const look = o.clone().addScaledVector(fv, 2);
-      rig.setPose(pos, look, 40, dur);
-    } else {
-      // Close top-down view; distance chosen so the disc fills a comfortable area of the screen.
-      const minDim = Math.min(window.innerWidth, window.innerHeight);
-      const targetR = Math.max(80, Math.min(150, minDim * 0.24));
-      const fov = 50;
-      const d = (VISUAL_R * window.innerHeight) / (2 * Math.tan(THREE.MathUtils.degToRad(fov / 2)) * targetR);
-      const pitch = THREE.MathUtils.degToRad(74);
-      const pos = o.clone().addScaledVector(fwd, -Math.cos(pitch) * d).add(new THREE.Vector3(0, Math.sin(pitch) * d, 0));
-      // Look at the disc itself so it sits mid-screen, clear of the bottom panel.
-      const look = o.clone().addScaledVector(fwd, d * 0.06);
-      rig.setPose(pos, look, fov, dur, fwd);
-    }
+    // Shallow enough to see down the course, with the disc just above the panel.
+    const fov = portrait ? 74 : 62;
+    const back = portrait ? 1.15 : 1.02;
+    const up = portrait ? 0.75 : 0.63;
+    const pos = o.clone().addScaledVector(fwd, -back).add(new THREE.Vector3(0, up, 0));
+    const look = o.clone().addScaledVector(fwd, 0.8);
+    this.deps.rig.setPose(pos, look, fov, dur);
   }
 
   private updatePose(): void {
     const fr = this.frame();
     this.deps.onPose(fr.quat);
-    // Arrow along the launch direction, lying in the vertical plane of the aim.
     const yaw = Math.atan2(-this.aim.y, this.aim.x);
     const a = (this.angleDeg * Math.PI) / 180;
     this.arrow.position.copy(this.origin);
     this.arrow.rotation.set(0, yaw, a, 'YXZ');
-    this.horizon.position.copy(this.origin);
-    this.horizon.rotation.set(0, yaw, 0, 'YXZ');
-    this.arc.position.copy(this.origin);
-    this.arc.rotation.set(0, yaw, 0, 'YXZ');
-    const g = new THREE.RingGeometry(0.42, 0.46, 32, 1, Math.min(0, a), Math.max(0.001, Math.abs(a)));
-    this.arc.geometry.dispose();
-    this.arc.geometry = g;
+    this.drawGauges();
   }
 
-  private renderPanel(): void {
-    const p = this.phase;
-    const step = (n: number, label: string, key: AimPhase) =>
-      `<div class="aim-step ${p === key ? 'on' : ''} ${(['angle', 'tilt', 'swipe'] as AimPhase[]).indexOf(key) < (['angle', 'tilt', 'swipe'] as AimPhase[]).indexOf(p) ? 'done' : ''}"><b>${n}</b>${label}</div>`;
-    let body = '';
-    if (p === 'angle') {
-      body = `<div class="aim-value">${this.angleDeg}<small>°</small></div>
-        <div class="aim-hint">上下にドラッグして<b>投げる角度</b>を決めよう</div>
-        <div class="aim-buttons"><button class="btn round" data-act="minus">−</button><button class="btn round" data-act="plus">＋</button><button class="btn primary" data-act="next">つぎへ ▶</button></div>`;
-    } else if (p === 'tilt') {
-      const t = this.tiltDeg;
-      const curve = Math.abs(t) < 4 ? 'まっすぐ' : t > 0 ? '右へカーブ' : '左へカーブ';
-      body = `<div class="aim-value">${t > 0 ? '右' : t < 0 ? '左' : ''}${Math.abs(t)}<small>°</small></div>
-        <div class="aim-hint">左右にドラッグして<b>ディスクの傾き</b>を決めよう（${curve}）</div>
-        <div class="aim-buttons"><button class="btn" data-act="back">◀ もどる</button><button class="btn round" data-act="minus">◀</button><button class="btn round" data-act="plus">▶</button><button class="btn primary" data-act="next">つぎへ ▶</button></div>`;
-    } else {
-      body = `<div class="aim-row"><button class="btn small" data-act="back">◀</button><div><div class="aim-hint big">ディスクを<b>スワイプ</b>して投げよう！</div>
-        <div class="aim-hint">速さ＝パワー ／ 中心からズラすほど回転アップ</div></div></div>`;
-    }
-    this.panel.innerHTML = `<div class="aim-steps">${step(1, '角度', 'angle')}${step(2, '傾き', 'tilt')}${step(3, 'スワイプ', 'swipe')}</div>${body}`;
-    this.panel.querySelectorAll('button').forEach((b) => {
-      b.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.action((b as HTMLElement).dataset.act!);
-      });
-      b.addEventListener('pointerdown', (e) => e.stopPropagation());
-    });
-  }
+  // ---------------------------------------------------------------- panel
 
-  private action(act: string): void {
-    if (!this.active) return;
-    if (act === 'next') {
-      this.deps.sfx('click');
-      this.setPhase(this.phase === 'angle' ? 'tilt' : 'swipe');
-    } else if (act === 'back') {
+  private buildPanel(): void {
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    this.panel.innerHTML = `<div class="aim-row">
+        <canvas class="gauge side" width="112" height="112"></canvas>
+        <canvas class="gauge back" width="112" height="112"></canvas>
+        <div class="aim-read"></div>
+        <button class="btn small" data-act="reset" aria-label="リセット">↺</button>
+      </div>
+      <div class="aim-help">${
+        coarse
+          ? '<b>2本指ドラッグ</b>：上下で角度・左右／ひねりで傾き　<b>1本指スワイプ</b>：投げる'
+          : '<b>右ドラッグ</b>（またはShift＋ドラッグ・矢印キー）：角度と傾き　<b>スワイプ</b>：投げる'
+      }</div>`;
+    this.sideGauge = this.panel.querySelector('.gauge.side')!;
+    this.backGauge = this.panel.querySelector('.gauge.back')!;
+    this.readout = this.panel.querySelector('.aim-read')!;
+    this.panel.querySelector('[data-act=reset]')!.addEventListener('click', (e) => {
+      e.stopPropagation();
       this.deps.sfx('back');
-      this.setPhase(this.phase === 'swipe' ? 'tilt' : 'angle');
-    } else if (act === 'plus' || act === 'minus') {
-      const d = act === 'plus' ? 1 : -1;
-      if (this.phase === 'angle') this.setAngle(this.angleDeg + d);
-      else if (this.phase === 'tilt') this.setTilt(this.tiltDeg + d * 2);
-    }
+      this.angleDeg = DEFAULT_ANGLE;
+      this.tiltDeg = 0;
+      this.updatePose();
+    });
+    this.panel.querySelector('button')!.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
+
+  /** Two little dials: the disc seen from the side (angle) and from behind (tilt). */
+  private drawGauges(): void {
+    const draw = (cv: HTMLCanvasElement, deg: number, title: string, showUp: boolean) => {
+      const g = cv.getContext('2d')!;
+      const s = cv.width;
+      const c = s / 2;
+      g.clearRect(0, 0, s, s);
+      g.fillStyle = 'rgba(255,255,255,0.92)';
+      g.strokeStyle = '#2a2140';
+      g.lineWidth = 4;
+      g.beginPath();
+      g.arc(c, c, c - 4, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      g.setLineDash([5, 5]);
+      g.strokeStyle = 'rgba(42,33,64,0.35)';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(10, c);
+      g.lineTo(s - 10, c);
+      g.stroke();
+      g.setLineDash([]);
+      g.save();
+      g.translate(c, c);
+      g.rotate((-deg * Math.PI) / 180 * (showUp ? 1 : -1));
+      // disc edge-on
+      g.fillStyle = '#ff5a2a';
+      g.strokeStyle = '#2a2140';
+      g.lineWidth = 3;
+      g.beginPath();
+      g.ellipse(0, 0, s * 0.3, s * 0.07, 0, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      if (showUp) {
+        g.strokeStyle = '#ff4f6d';
+        g.fillStyle = '#ff4f6d';
+        g.lineWidth = 4;
+        g.beginPath();
+        g.moveTo(s * 0.12, 0);
+        g.lineTo(s * 0.38, 0);
+        g.stroke();
+        g.beginPath();
+        g.moveTo(s * 0.44, 0);
+        g.lineTo(s * 0.34, -8);
+        g.lineTo(s * 0.34, 8);
+        g.closePath();
+        g.fill();
+      } else {
+        // top-face marker so upside-down reads clearly
+        g.fillStyle = '#ffd23f';
+        g.beginPath();
+        g.arc(0, -s * 0.1, 6, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
+      }
+      g.restore();
+      g.fillStyle = '#2a2140';
+      g.font = '900 18px "M PLUS Rounded 1c", sans-serif';
+      g.textAlign = 'center';
+      g.fillText(title, c, s - 14);
+    };
+    if (!this.sideGauge) return;
+    draw(this.sideGauge, this.angleDeg, '角度', true);
+    draw(this.backGauge, this.tiltDeg, '傾き', false);
+    const t = this.tiltDeg;
+    const tilt = t === 0 ? '0°' : Math.abs(t) > 150 ? `うら ${180 - Math.abs(t)}°` : `${t > 0 ? '右' : '左'}${Math.abs(t)}°`;
+    const curve = Math.abs(t) < 4 ? 'まっすぐ' : Math.abs(t) > 90 ? 'うら投げ！' : t > 0 ? '右へカーブ' : '左へカーブ';
+    this.readout.innerHTML = `<div>角度 <b>${this.angleDeg}°</b></div><div>傾き <b>${tilt}</b></div><small>${curve}</small>`;
   }
 
   private setAngle(v: number): void {
     const nv = Math.round(THREE.MathUtils.clamp(v, ANGLE_MIN, ANGLE_MAX));
     if (nv !== this.angleDeg) {
+      if (Math.floor(nv / 5) !== Math.floor(this.angleDeg / 5)) this.deps.sfx('tick');
       this.angleDeg = nv;
-      this.deps.sfx('tick');
       this.updatePose();
-      this.renderPanelValue();
     }
   }
 
   private setTilt(v: number): void {
-    const nv = Math.round(THREE.MathUtils.clamp(v, -TILT_MAX, TILT_MAX));
+    const nv = Math.round(wrap180(v));
     if (nv !== this.tiltDeg) {
+      if (Math.floor(nv / 5) !== Math.floor(this.tiltDeg / 5)) this.deps.sfx('tick');
       this.tiltDeg = nv;
-      this.deps.sfx('tick');
       this.updatePose();
-      this.renderPanelValue();
-      this.applyCamera(0);
     }
   }
 
-  private renderPanelValue(): void {
-    const v = this.panel.querySelector('.aim-value');
-    const h = this.panel.querySelectorAll('.aim-hint')[0];
-    if (!v) return;
-    if (this.phase === 'angle') {
-      v.innerHTML = `${this.angleDeg}<small>°</small>`;
-    } else if (this.phase === 'tilt') {
-      const t = this.tiltDeg;
-      v.innerHTML = `${t > 0 ? '右' : t < 0 ? '左' : ''}${Math.abs(t)}<small>°</small>`;
-      const curve = Math.abs(t) < 4 ? 'まっすぐ' : t > 0 ? '右へカーブ' : '左へカーブ';
-      if (h) h.innerHTML = `左右にドラッグして<b>ディスクの傾き</b>を決めよう（${curve}）`;
+  private turn(dAngle: number, dTilt: number): void {
+    this.accA += dAngle;
+    this.accT += dTilt;
+    const a = Math.trunc(this.accA);
+    const t = Math.trunc(this.accT);
+    if (a) {
+      this.accA -= a;
+      this.setAngle(this.angleDeg + a);
+    }
+    if (t) {
+      this.accT -= t;
+      this.setTilt(this.tiltDeg + t);
     }
   }
 
   private key(e: KeyboardEvent): void {
     if (!this.active) return;
-    if (e.key === 'ArrowUp' && this.phase === 'angle') this.setAngle(this.angleDeg + 1);
-    else if (e.key === 'ArrowDown' && this.phase === 'angle') this.setAngle(this.angleDeg - 1);
-    else if (e.key === 'ArrowRight' && this.phase === 'tilt') this.setTilt(this.tiltDeg + 2);
-    else if (e.key === 'ArrowLeft' && this.phase === 'tilt') this.setTilt(this.tiltDeg - 2);
-    else if (e.key === 'Enter' || e.key === ' ') {
-      if (this.phase !== 'swipe') this.action('next');
-    } else if (e.key === 'Backspace' || e.key === 'Escape') {
-      if (this.phase !== 'angle') this.action('back');
-    } else return;
+    if (e.key === 'ArrowUp') this.setAngle(this.angleDeg + 1);
+    else if (e.key === 'ArrowDown') this.setAngle(this.angleDeg - 1);
+    else if (e.key === 'ArrowRight') this.setTilt(this.tiltDeg + 2);
+    else if (e.key === 'ArrowLeft') this.setTilt(this.tiltDeg - 2);
+    else return;
+    this.hintDone.add('orient');
     e.preventDefault();
   }
 
+  // ---------------------------------------------------------------- pointers
+
   private down(e: PointerEvent): void {
-    if (!this.active || e.button > 0) return;
-    this.dragging = true;
-    this.hintDone.add(this.phase);
+    if (!this.active) return;
     this.pointerType = e.pointerType || 'mouse';
-    this.lastX = e.clientX;
-    this.lastY = e.clientY;
-    if (this.phase === 'swipe') {
-      this.swipePts = [{ x: e.clientX, y: e.clientY, t: performance.now() }];
-      this.swipeFade = null;
-      this.livePower = 0;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const mouseOrient = e.pointerType === 'mouse' && (e.button === 2 || e.shiftKey || e.altKey);
+    if (this.pointers.size >= 2 || mouseOrient) {
+      // A second finger turns the gesture into rotating the disc.
+      this.mode = 'orient';
+      this.swipePts = [];
+      this.previewLine.visible = false;
+      this.orientPrev = this.pinch();
+      this.hintDone.add('orient');
+      return;
     }
+    if (e.button > 0) return;
+    this.mode = 'swipe';
+    this.swipePts = [{ x: e.clientX, y: e.clientY, t: performance.now() }];
+    this.swipeFade = null;
+    this.livePower = 0;
+  }
+
+  /** Centroid and finger angle of the active pointers. */
+  private pinch(): { cx: number; cy: number; ang: number } {
+    const ps = [...this.pointers.values()];
+    const cx = ps.reduce((a, p) => a + p.x, 0) / ps.length;
+    const cy = ps.reduce((a, p) => a + p.y, 0) / ps.length;
+    const ang = ps.length >= 2 ? Math.atan2(ps[1].y - ps[0].y, ps[1].x - ps[0].x) : 0;
+    return { cx, cy, ang };
   }
 
   private move(e: PointerEvent): void {
-    if (!this.active || !this.dragging) return;
-    const dx = e.clientX - this.lastX;
-    const dy = e.clientY - this.lastY;
-    if (this.phase === 'angle') {
-      this.accum += -dy * 0.22;
-      const steps = Math.trunc(this.accum);
-      if (steps !== 0) {
-        this.accum -= steps;
-        this.setAngle(this.angleDeg + steps);
-      }
-    } else if (this.phase === 'tilt') {
-      this.accum += dx * 0.3;
-      const steps = Math.trunc(this.accum);
-      if (steps !== 0) {
-        this.accum -= steps;
-        this.setTilt(this.tiltDeg + steps);
-      }
-    } else {
-      const pts = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    if (!this.active || !this.pointers.has(e.pointerId)) return;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.mode === 'orient') {
+      const now = this.pinch();
+      const prev = this.orientPrev ?? now;
+      let twist = now.ang - prev.ang;
+      if (twist > Math.PI) twist -= Math.PI * 2;
+      if (twist < -Math.PI) twist += Math.PI * 2;
+      const k = Math.min(window.innerWidth, window.innerHeight) / 700;
+      this.turn((-(now.cy - prev.cy) * 0.3) / k, ((now.cx - prev.cx) * 0.35) / k + (this.pointers.size >= 2 ? (twist * 180) / Math.PI : 0));
+      this.orientPrev = now;
+    } else if (this.mode === 'swipe') {
+      const pts = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
       for (const p of pts.length ? pts : [e]) this.swipePts.push({ x: p.clientX, y: p.clientY, t: p.timeStamp || performance.now() });
       if (this.swipePts.length > 400) this.swipePts.splice(0, this.swipePts.length - 400);
       this.livePower = this.measurePower(this.swipePts).power;
       this.updatePreview();
     }
-    this.lastX = e.clientX;
-    this.lastY = e.clientY;
   }
-  private accum = 0;
-  private hintDone = new Set<AimPhase>();
-  /** Diagnostics for the most recent swipe (inspected by automated tests). */
-  lastSwipe: { pts: number[][]; dd: number; offset: number } | null = null;
 
   private up(e: PointerEvent): void {
-    if (!this.active || !this.dragging) return;
-    this.dragging = false;
-    this.accum = 0;
-    if (this.phase !== 'swipe') return;
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.delete(e.pointerId);
+    if (!this.active) return;
+    if (this.mode === 'orient') {
+      if (this.pointers.size === 0) this.mode = 'none';
+      else this.orientPrev = this.pinch();
+      return;
+    }
+    if (this.mode !== 'swipe') return;
+    this.mode = 'none';
     this.swipePts.push({ x: e.clientX, y: e.clientY, t: e.timeStamp || performance.now() });
     this.previewLine.visible = false;
     this.resolveSwipe();
@@ -436,7 +465,7 @@ export class ThrowInput {
   private measurePower(pts: Pt[]): { power: number; dd: number } {
     let start = pts.length - 1;
     while (start > 0 && pts[pts.length - 1].t - pts[start - 1].t < 700) start--;
-    const dd = swipeSpeed(this.toSamples(pts.slice(start)), VISUAL_R);
+    const dd = swipeSpeed(this.toSamples(pts.slice(start)), this.visualR);
     return { power: powerFromSpeed(dd, this.fullSpeed()), dd };
   }
 
@@ -461,7 +490,7 @@ export class ThrowInput {
     this.swipePts = [];
     if (pts.length < 2 || !this.disc) return;
     const c = this.origin;
-    const a = analyzeSwipe(this.toSamples(pts), c.x, c.z, VISUAL_R, this.fullSpeed());
+    const a = analyzeSwipe(this.toSamples(pts), c.x, c.z, this.visualR, this.fullSpeed());
     this.lastSwipe = { pts: pts.map((p) => [Math.round(p.x), Math.round(p.y), Math.round(p.t)]), dd: a.dd, offset: a.offset };
     if (a.reason === 'tap') return;
     if (!a.ok) {
@@ -470,9 +499,10 @@ export class ThrowInput {
       this.deps.onMiss(a.reason === 'miss' ? 'ディスクの上をなぞるようにスワイプしよう！' : 'もっと素早くシュッとスワイプ！');
       return;
     }
+    this.hintDone.add('swipe');
     const dt = this.disc;
     const speed = dt.minSpeed + (dt.maxSpeed - dt.minSpeed) * Math.pow(a.power, 1.15);
-    const spin = a.spinSign * dt.maxAdvance * a.spinFactor * (speed / PHYS_R);
+    const spin = a.spinSign * dt.maxAdvance * a.spinFactor * (speed / dt.spec.radius);
     const sA = this.toScreen(new THREE.Vector3(a.footX, c.y, a.footZ));
     const sC = this.toScreen(c);
     this.swipeFade = {
@@ -499,110 +529,59 @@ export class ThrowInput {
     });
   }
 
+  // ---------------------------------------------------------------- overlay
+
+  /** Outline of the disc's hit area on the horizontal plane, in screen space. */
+  private hitOutline(scale: number): [number, number][] {
+    const out: [number, number][] = [];
+    for (let i = 0; i <= 40; i++) {
+      const a = (i / 40) * Math.PI * 2;
+      out.push(this.toScreen(this.origin.clone().add(new THREE.Vector3(Math.cos(a) * this.visualR * scale, 0, Math.sin(a) * this.visualR * scale))));
+    }
+    return out;
+  }
+
   private drawOverlay(): void {
     const ctx = this.ctx;
     const w = window.innerWidth;
     const h = window.innerHeight;
     ctx.clearRect(0, 0, w, h);
     const now = performance.now();
-    if (this.active && this.phase === 'angle') {
-      // Angle label next to the arc.
-      const a = (this.angleDeg * Math.PI) / 180;
-      const fwd = new THREE.Vector3(this.aim.x, 0, this.aim.y);
-      const p = this.origin.clone().addScaledVector(fwd, Math.cos(a / 2) * 0.62).add(new THREE.Vector3(0, Math.sin(a / 2) * 0.62, 0));
-      const [x, y] = this.toScreen(p);
-      label(ctx, `${this.angleDeg}°`, x + 18, y, 22);
-    }
-    if (this.active && this.phase === 'tilt') {
-      const [cx, cy] = this.toScreen(this.origin);
-      const R = Math.min(w, h) * 0.32;
-      ctx.save();
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-      ctx.beginPath();
-      ctx.arc(cx, cy, R, Math.PI + 0.35, -0.35);
-      ctx.stroke();
-      for (let d = -60; d <= 60; d += 15) {
-        const ang = -Math.PI / 2 + (d * Math.PI) / 180;
-        const inner = d % 30 === 0 ? R - 16 : R - 9;
-        ctx.beginPath();
-        ctx.moveTo(cx + Math.cos(ang) * inner, cy + Math.sin(ang) * inner);
-        ctx.lineTo(cx + Math.cos(ang) * R, cy + Math.sin(ang) * R);
-        ctx.stroke();
-      }
-      const ang = -Math.PI / 2 + (this.tiltDeg * Math.PI) / 180;
-      ctx.strokeStyle = '#ff4f6d';
-      ctx.lineWidth = 6;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(cx + Math.cos(ang) * (R - 26), cy + Math.sin(ang) * (R - 26));
-      ctx.lineTo(cx + Math.cos(ang) * (R + 8), cy + Math.sin(ang) * (R + 8));
-      ctx.stroke();
-      // Level line through the disc, rotated by the tilt.
-      const t = (this.tiltDeg * Math.PI) / 180;
-      ctx.setLineDash([8, 8]);
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-      ctx.beginPath();
-      ctx.moveTo(cx - R * 0.9, cy);
-      ctx.lineTo(cx + R * 0.9, cy);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.strokeStyle = 'rgba(255,79,109,0.9)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(cx - Math.cos(t) * R * 0.75, cy - Math.sin(t) * R * 0.75);
-      ctx.lineTo(cx + Math.cos(t) * R * 0.75, cy + Math.sin(t) * R * 0.75);
-      ctx.stroke();
-      label(ctx, 'L', cx - R - 6, cy - 14, 18);
-      label(ctx, 'R', cx + R + 6, cy - 14, 18);
-      // Curve hint.
-      if (Math.abs(this.tiltDeg) >= 4) {
-        const dirS = this.tiltDeg > 0 ? 1 : -1;
-        ctx.strokeStyle = '#ffd23f';
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy - R * 0.45);
-        ctx.quadraticCurveTo(cx, cy - R * 0.85, cx + dirS * R * 0.42, cy - R * 0.95);
-        ctx.stroke();
-        const ex = cx + dirS * R * 0.42;
-        const ey = cy - R * 0.95;
-        ctx.fillStyle = '#ffd23f';
-        ctx.beginPath();
-        ctx.moveTo(ex + dirS * 14, ey);
-        ctx.lineTo(ex - dirS * 4, ey - 10);
-        ctx.lineTo(ex - dirS * 4, ey + 10);
-        ctx.closePath();
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-    if (this.active && this.phase === 'swipe') {
-      const [cx, cy] = this.toScreen(this.origin);
-      const edge = this.toScreen(this.origin.clone().add(new THREE.Vector3(VISUAL_R, 0, 0)));
-      const edge2 = this.toScreen(this.origin.clone().add(new THREE.Vector3(0, 0, VISUAL_R)));
-      const r = Math.max(Math.hypot(edge[0] - cx, edge[1] - cy), Math.hypot(edge2[0] - cx, edge2[1] - cy));
+    if (this.active) {
+      const ring = this.hitOutline(1.12);
       ctx.save();
       const pulse = 0.5 + 0.5 * Math.sin(now / 300);
-      ctx.strokeStyle = `rgba(255,255,255,${0.5 + pulse * 0.4})`;
+      ctx.strokeStyle = this.mode === 'orient' ? 'rgba(255,210,63,0.95)' : `rgba(255,255,255,${0.5 + pulse * 0.4})`;
       ctx.lineWidth = 3;
       ctx.setLineDash([10, 8]);
       ctx.beginPath();
-      ctx.arc(cx, cy, r * 1.12, 0, Math.PI * 2);
+      ring.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
       ctx.stroke();
       ctx.setLineDash([]);
+      const [cx, cy] = this.toScreen(this.origin);
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
       ctx.beginPath();
       ctx.arc(cx, cy, 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
-      // Live swipe trail + power gauge.
-      if (this.swipePts.length > 1) {
+      if (this.mode === 'orient') {
+        label(ctx, `角度 ${this.angleDeg}°　傾き ${this.tiltDeg}°`, w / 2, h * 0.16, 20);
+        for (const p of this.pointers.values()) {
+          ctx.save();
+          ctx.globalAlpha = 0.7;
+          ctx.fillStyle = '#ffd23f';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 22, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+      if (this.mode === 'swipe' && this.swipePts.length > 1) {
         drawTrail(ctx, this.swipePts, '#ffffff', 1);
         gauge(ctx, w, h, this.livePower);
       }
+      if (this.mode === 'none' && this.deps.hints()) this.drawHint(ctx, now);
     }
-    if (this.active && !this.dragging && !this.hintDone.has(this.phase) && this.deps.hints()) this.drawHint(ctx, w, h, now);
     if (this.swipeFade && now < this.swipeFade.until) {
       const k = (this.swipeFade.until - now) / 1000;
       drawTrail(ctx, this.swipeFade.pts, this.swipeFade.color, Math.min(1, k * 1.5));
@@ -625,63 +604,60 @@ export class ThrowInput {
     }
   }
 
-  /** Ghost finger demonstrating the gesture of the current step. */
-  private drawHint(ctx: CanvasRenderingContext2D, w: number, h: number, now: number): void {
+  /** Ghost fingers demonstrating the gestures (alternating two-finger turn and swipe). */
+  private drawHint(ctx: CanvasRenderingContext2D, now: number): void {
+    const cycle = Math.floor(now / 1700);
+    const wantOrient = !this.hintDone.has('orient');
+    const wantSwipe = !this.hintDone.has('swipe');
+    if (!wantOrient && !wantSwipe) return;
+    const showOrient = wantOrient && (!wantSwipe || cycle % 2 === 1);
     const t = (now % 1700) / 1700;
     const k = t < 0.15 ? 0 : t > 0.85 ? 1 : (t - 0.15) / 0.7;
     const e = k * k * (3 - 2 * k);
     const alpha = t < 0.1 ? t / 0.1 : t > 0.9 ? (1 - t) / 0.1 : 1;
-    let x0: number, y0: number, x1: number, y1: number;
-    if (this.phase === 'angle') {
-      x0 = x1 = w * 0.62;
-      y0 = h * 0.55;
-      y1 = h * 0.38;
-    } else if (this.phase === 'tilt') {
-      y0 = y1 = h * 0.6;
-      x0 = w * 0.5 - Math.min(w, h) * 0.18;
-      x1 = w * 0.5 + Math.min(w, h) * 0.18;
-    } else {
-      const [cx, cy] = this.toScreen(this.origin);
-      const edge = this.toScreen(this.origin.clone().add(new THREE.Vector3(VISUAL_R, 0, 0)));
-      const r = Math.max(30, Math.hypot(edge[0] - cx, edge[1] - cy));
-      x0 = x1 = cx + r * 0.7;
-      y0 = cy + r * 1.5;
-      y1 = cy - r * 2.4;
-    }
-    const x = x0 + (x1 - x0) * e;
-    const y = y0 + (y1 - y0) * e;
+    const [cx, cy] = this.toScreen(this.origin);
+    const edge = this.toScreen(this.origin.clone().add(new THREE.Vector3(this.visualR, 0, 0)));
+    const r = Math.max(30, Math.hypot(edge[0] - cx, edge[1] - cy));
+    const fingers: [number, number, number, number][] = showOrient
+      ? [
+          [cx - r * 1.6, cy - r * 0.2, cx - r * 1.6, cy - r * 1.6],
+          [cx + r * 1.6, cy - r * 0.2, cx + r * 1.6, cy - r * 1.6],
+        ]
+      : [[cx + r * 0.7, cy + r * 1.3, cx + r * 0.7, cy - r * 2.4]];
     ctx.save();
-    ctx.globalAlpha = alpha * 0.9;
-    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 6;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,255,0.95)';
-    ctx.strokeStyle = 'rgba(42,33,64,0.9)';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(x, y, 17, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(x, y, 17 + 14 * ((now % 700) / 700), 0, Math.PI * 2);
-    ctx.globalAlpha = alpha * (1 - (now % 700) / 700) * 0.8;
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 3;
-    ctx.stroke();
+    for (const [x0, y0, x1, y1] of fingers) {
+      const x = x0 + (x1 - x0) * e;
+      const y = y0 + (y1 - y0) * e;
+      ctx.globalAlpha = alpha * 0.9;
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.strokeStyle = 'rgba(42,33,64,0.9)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(x, y, 17, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.restore();
+    label(ctx, showOrient ? '2本指で角度・傾き' : 'スワイプで投げる', cx, cy - r * 2.9, 17, alpha);
   }
 
   dispose(): void {
     cancelAnimationFrame(this.raf);
     this.deps.canvas.removeEventListener('pointerdown', this.boundDown);
+    this.deps.canvas.removeEventListener('contextmenu', this.boundMenu);
     window.removeEventListener('pointermove', this.boundMove);
     window.removeEventListener('pointerup', this.boundUp);
     window.removeEventListener('pointercancel', this.boundUp);
     window.removeEventListener('keydown', this.boundKey);
+    document.removeEventListener('gesturestart', this.boundMenu);
+    document.removeEventListener('gesturechange', this.boundMenu);
     this.overlay.remove();
     this.panel.remove();
     this.scene.remove(this.helpers);
