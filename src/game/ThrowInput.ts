@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { DiscType } from '../data/discs';
 import { launchFrame } from '../physics/launch';
 import type { CameraRig } from './CameraRig';
-import { analyzeSwipe, powerFromSpeed, swipeSpeed, type SwipeSample } from './swipe';
+import { analyzePull, type PullAnalysis } from './swipe';
 
 export interface ThrowResult {
   /** Horizontal heading (unit). */
@@ -14,7 +14,7 @@ export interface ThrowResult {
   /** rad/s about the disc normal, + = counter-clockwise from above */
   spin: number;
   power: number;
-  /** 0..1 how far from the centre the swipe passed */
+  /** 0..1 how far from the centre the launch line passed */
   spinFactor: number;
   grazed: boolean;
 }
@@ -30,6 +30,8 @@ export interface ThrowInputDeps {
   sfx: (name: 'click' | 'tick' | 'swipe' | 'back') => void;
   /** Whether to show the animated gesture hints (first throws). */
   hints: () => boolean;
+  /** Moves the preview disc back while it is being pulled (world offset). */
+  onPull: (dx: number, dz: number) => void;
   /** Disc pose preview: called whenever angle/tilt change. */
   onPose: (quat: [number, number, number, number]) => void;
 }
@@ -40,13 +42,10 @@ const DEFAULT_ANGLE = 10;
 /** Drawn disc size relative to its physical radius (matches DiscView). */
 const VISUAL_SCALE = 1.1;
 
-interface Pt {
-  x: number;
-  y: number;
-  t: number;
-}
+type Mode = 'none' | 'pull' | 'orient';
 
-type Mode = 'none' | 'swipe' | 'orient';
+/** Shortest drag (px) that counts as a pull. */
+const MIN_PULL_PX = 14;
 
 const wrap180 = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
 
@@ -54,7 +53,7 @@ const wrap180 = (d: number) => ((((d + 180) % 360) + 360) % 360) - 180;
  * Aiming and throwing from a single view behind the disc.
  * - Two-finger drag (or right-drag / Shift-drag / arrow keys) turns the disc:
  *   vertical = launch angle, horizontal or twisting = tilt (all the way round).
- * - One-finger swipe across the disc throws it.
+ * - Grabbing the disc with one finger, pulling back and letting go throws it.
  */
 export class ThrowInput {
   angleDeg = DEFAULT_ANGLE;
@@ -79,13 +78,11 @@ export class ThrowInput {
   private orientPrev: { cx: number; cy: number; ang: number } | null = null;
   private accA = 0;
   private accT = 0;
-  private swipePts: Pt[] = [];
-  private swipeFade: { pts: Pt[]; until: number; offset?: [Pt, Pt]; label?: string; color: string } | null = null;
-  private pointerType = 'mouse';
-  private livePower = 0;
+  private grab: { sx: number; sy: number; x: number; z: number; cx: number; cy: number } | null = null;
+  private pullFade: { until: number; from: [number, number]; to: [number, number]; label: string } | null = null;
   private raf = 0;
-  private hintDone = new Set<'orient' | 'swipe'>();
-  /** Diagnostics for the most recent swipe (inspected by automated tests). */
+  private hintDone = new Set<'orient' | 'pull'>();
+  /** Diagnostics for the most recent pull (inspected by automated tests). */
   lastSwipe: { pts: number[][]; dd: number; offset: number } | null = null;
   private boundDown = (e: PointerEvent) => this.down(e);
   private boundMove = (e: PointerEvent) => this.move(e);
@@ -188,7 +185,7 @@ export class ThrowInput {
     this.active = false;
     this.helpers.visible = false;
     this.panel.classList.add('hidden');
-    this.swipePts = [];
+    this.cancelPull();
     this.mode = 'none';
     this.pointers.clear();
   }
@@ -203,11 +200,12 @@ export class ThrowInput {
     const fwd = new THREE.Vector3(this.aim.x, 0, this.aim.y);
     const portrait = window.innerHeight > window.innerWidth;
     // Shallow enough to see down the course, with the disc just above the panel.
-    const fov = portrait ? 74 : 62;
-    const back = portrait ? 1.15 : 1.02;
-    const up = portrait ? 0.75 : 0.63;
+    // Close to the disc (room below it to pull back), course ahead in the upper part.
+    const fov = portrait ? 78 : 68;
+    const back = portrait ? 0.82 : 0.72;
+    const up = portrait ? 0.46 : 0.38;
     const pos = o.clone().addScaledVector(fwd, -back).add(new THREE.Vector3(0, up, 0));
-    const look = o.clone().addScaledVector(fwd, 0.8);
+    const look = o.clone().addScaledVector(fwd, portrait ? 0.15 : 0.32);
     this.deps.rig.setPose(pos, look, fov, dur);
   }
 
@@ -233,8 +231,8 @@ export class ThrowInput {
       </div>
       <div class="aim-help">${
         coarse
-          ? '<b>2本指ドラッグ</b>：上下で角度・左右／ひねりで傾き　<b>1本指スワイプ</b>：投げる'
-          : '<b>右ドラッグ</b>（またはShift＋ドラッグ・矢印キー）：角度と傾き　<b>スワイプ</b>：投げる'
+          ? '<b>2本指ドラッグ</b>：角度・傾き　<b>ディスクをつかんで引っぱって離す</b>：投げる'
+          : '<b>右ドラッグ</b>（Shift＋ドラッグ・矢印キー）：角度と傾き　<b>ディスクを引っぱって離す</b>：投げる'
       }</div>`;
     this.sideGauge = this.panel.querySelector('.gauge.side')!;
     this.backGauge = this.panel.querySelector('.gauge.back')!;
@@ -367,23 +365,33 @@ export class ThrowInput {
 
   private down(e: PointerEvent): void {
     if (!this.active) return;
-    this.pointerType = e.pointerType || 'mouse';
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const mouseOrient = e.pointerType === 'mouse' && (e.button === 2 || e.shiftKey || e.altKey);
     if (this.pointers.size >= 2 || mouseOrient) {
       // A second finger turns the gesture into rotating the disc.
       this.mode = 'orient';
-      this.swipePts = [];
-      this.previewLine.visible = false;
+      this.cancelPull();
       this.orientPrev = this.pinch();
       this.hintDone.add('orient');
       return;
     }
     if (e.button > 0) return;
-    this.mode = 'swipe';
-    this.swipePts = [{ x: e.clientX, y: e.clientY, t: performance.now() }];
-    this.swipeFade = null;
-    this.livePower = 0;
+    const g = this.toPlane(e.clientX, e.clientY);
+    if (!g || Math.hypot(g.x - this.origin.x, g.z - this.origin.z) > this.visualR * 1.35) {
+      this.mode = 'none';
+      this.deps.onMiss('ディスクをつかんで、うしろに引っぱって離そう！');
+      return;
+    }
+    this.mode = 'pull';
+    this.grab = { sx: e.clientX, sy: e.clientY, x: g.x, z: g.z, cx: e.clientX, cy: e.clientY };
+    this.pullFade = null;
+    this.deps.sfx('tick');
+  }
+
+  private cancelPull(): void {
+    this.grab = null;
+    this.previewLine.visible = false;
+    this.deps.onPull(0, 0);
   }
 
   /** Centroid and finger angle of the active pointers. */
@@ -407,12 +415,10 @@ export class ThrowInput {
       const k = Math.min(window.innerWidth, window.innerHeight) / 700;
       this.turn((-(now.cy - prev.cy) * 0.3) / k, ((now.cx - prev.cx) * 0.35) / k + (this.pointers.size >= 2 ? (twist * 180) / Math.PI : 0));
       this.orientPrev = now;
-    } else if (this.mode === 'swipe') {
-      const pts = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
-      for (const p of pts.length ? pts : [e]) this.swipePts.push({ x: p.clientX, y: p.clientY, t: p.timeStamp || performance.now() });
-      if (this.swipePts.length > 400) this.swipePts.splice(0, this.swipePts.length - 400);
-      this.livePower = this.measurePower(this.swipePts).power;
-      this.updatePreview();
+    } else if (this.mode === 'pull' && this.grab) {
+      this.grab.cx = e.clientX;
+      this.grab.cy = e.clientY;
+      this.updatePull();
     }
   }
 
@@ -425,11 +431,11 @@ export class ThrowInput {
       else this.orientPrev = this.pinch();
       return;
     }
-    if (this.mode !== 'swipe') return;
+    if (this.mode !== 'pull' || !this.grab) return;
     this.mode = 'none';
-    this.swipePts.push({ x: e.clientX, y: e.clientY, t: e.timeStamp || performance.now() });
-    this.previewLine.visible = false;
-    this.resolveSwipe();
+    this.grab.cx = e.clientX;
+    this.grab.cy = e.clientY;
+    this.release();
   }
 
   /** Projects a screen point onto the horizontal plane at the disc height. */
@@ -448,72 +454,62 @@ export class ThrowInput {
     return [((v.x + 1) / 2) * window.innerWidth, ((1 - v.y) / 2) * window.innerHeight];
   }
 
-  /** Converts screen samples to points on the disc's horizontal plane. */
-  private toSamples(pts: Pt[]): SwipeSample[] {
-    const out: SwipeSample[] = [];
-    for (const p of pts) {
-      const w = this.toPlane(p.x, p.y);
-      if (w) out.push({ x: w.x, z: w.z, t: p.t });
-    }
-    return out;
+  /** Pull length in pixels needed for full power. */
+  private fullPull(): number {
+    return (Math.min(window.innerWidth, window.innerHeight) * 0.34) / this.deps.sensitivity();
   }
 
-  private fullSpeed(): number {
-    return (this.pointerType === 'touch' ? 21 : 13) / this.deps.sensitivity();
+  /** Current pull state: power from the drag length, direction/spin from the geometry. */
+  private pullState(): { power: number; a: PullAnalysis } | null {
+    const g = this.grab;
+    if (!g) return null;
+    const r = this.toPlane(g.cx, g.cy);
+    if (!r) return null;
+    const px = Math.hypot(g.cx - g.sx, g.cy - g.sy);
+    const power = THREE.MathUtils.clamp((px - MIN_PULL_PX) / (this.fullPull() - MIN_PULL_PX), 0, 1);
+    const a = analyzePull(g.x, g.z, r.x, r.z, this.origin.x, this.origin.z, this.visualR, px < MIN_PULL_PX ? Infinity : 1e-4);
+    return { power, a };
   }
 
-  private measurePower(pts: Pt[]): { power: number; dd: number } {
-    let start = pts.length - 1;
-    while (start > 0 && pts[pts.length - 1].t - pts[start - 1].t < 700) start--;
-    const dd = swipeSpeed(this.toSamples(pts.slice(start)), this.visualR);
-    return { power: powerFromSpeed(dd, this.fullSpeed()), dd };
-  }
-
-  private updatePreview(): void {
-    const pts = this.swipePts;
-    if (pts.length < 3) return;
-    const a = this.toPlane(pts[Math.max(0, pts.length - 6)].x, pts[Math.max(0, pts.length - 6)].y);
-    const b = this.toPlane(pts[pts.length - 1].x, pts[pts.length - 1].y);
-    if (!a || !b) return;
-    const d = b.clone().sub(a).setY(0);
-    if (d.lengthSq() < 1e-6) return;
-    d.normalize();
-    this.previewLine.visible = true;
-    this.previewLine.position.copy(this.aimLine.position).add(new THREE.Vector3(0, 0.005, 0));
-    this.previewLine.rotation.set(0, Math.atan2(d.x, d.z) + Math.PI, 0);
-    this.previewLine.scale.set(1.2, 1, 10);
-    this.deps.onAimPreview?.(d.x, d.z);
-  }
-
-  private resolveSwipe(): void {
-    const pts = this.swipePts;
-    this.swipePts = [];
-    if (pts.length < 2 || !this.disc) return;
-    const c = this.origin;
-    const a = analyzeSwipe(this.toSamples(pts), c.x, c.z, this.visualR, this.fullSpeed());
-    this.lastSwipe = { pts: pts.map((p) => [Math.round(p.x), Math.round(p.y), Math.round(p.t)]), dd: a.dd, offset: a.offset };
-    if (a.reason === 'tap') return;
-    if (!a.ok) {
-      this.deps.sfx('back');
-      this.swipeFade = { pts, until: performance.now() + 900, color: '#ff5a5a' };
-      this.deps.onMiss(a.reason === 'miss' ? 'ディスクの上をなぞるようにスワイプしよう！' : 'もっと素早くシュッとスワイプ！');
+  private updatePull(): void {
+    const st = this.pullState();
+    if (!st || !st.a.ok) {
+      this.previewLine.visible = false;
+      this.deps.onPull(0, 0);
       return;
     }
-    this.hintDone.add('swipe');
+    const { a, power } = st;
+    // The disc leans back with the pull.
+    const back = 0.06 + power * 0.12;
+    this.deps.onPull(-a.dirX * back, -a.dirZ * back);
+    this.previewLine.visible = true;
+    this.previewLine.position.copy(this.aimLine.position).add(new THREE.Vector3(0, 0.005, 0));
+    this.previewLine.rotation.set(0, Math.atan2(a.dirX, a.dirZ) + Math.PI, 0);
+    this.previewLine.scale.set(1.2, 1, 4 + power * 10);
+    this.deps.onAimPreview?.(a.dirX, a.dirZ);
+  }
+
+  private release(): void {
+    const st = this.pullState();
+    const g = this.grab;
+    this.cancelPull();
+    if (!st || !g || !this.disc) return;
+    const { a, power } = st;
+    this.lastSwipe = { pts: [[g.sx, g.sy], [g.cx, g.cy]], dd: power, offset: a.offset };
+    if (!a.ok) {
+      this.deps.sfx('back');
+      return; // released without pulling: cancel
+    }
+    this.hintDone.add('pull');
     const dt = this.disc;
-    const speed = dt.minSpeed + (dt.maxSpeed - dt.minSpeed) * Math.pow(a.power, 1.15);
+    const speed = dt.minSpeed + (dt.maxSpeed - dt.minSpeed) * Math.pow(power, 1.1);
     const spin = a.spinSign * dt.maxAdvance * a.spinFactor * (speed / dt.spec.radius);
-    const sA = this.toScreen(new THREE.Vector3(a.footX, c.y, a.footZ));
-    const sC = this.toScreen(c);
-    this.swipeFade = {
-      pts,
+    const c = this.origin;
+    this.pullFade = {
       until: performance.now() + 1100,
-      offset: [
-        { x: sC[0], y: sC[1], t: 0 },
-        { x: sA[0], y: sA[1], t: 0 },
-      ],
+      from: this.toScreen(c),
+      to: this.toScreen(new THREE.Vector3(a.footX, c.y, a.footZ)),
       label: `${Math.round(Math.abs(spin) * 9.549)} rpm`,
-      color: '#ffffff',
     };
     this.deps.sfx('swipe');
     this.deps.onThrow({
@@ -523,9 +519,9 @@ export class ThrowInput {
       tilt: (this.tiltDeg * Math.PI) / 180,
       speed,
       spin,
-      power: a.power,
+      power,
       spinFactor: a.spinFactor,
-      grazed: a.grazed,
+      grazed: false,
     });
   }
 
@@ -576,39 +572,71 @@ export class ThrowInput {
           ctx.restore();
         }
       }
-      if (this.mode === 'swipe' && this.swipePts.length > 1) {
-        drawTrail(ctx, this.swipePts, '#ffffff', 1);
-        gauge(ctx, w, h, this.livePower);
-      }
+      if (this.mode === 'pull' && this.grab) this.drawPull(ctx, w, h);
       if (this.mode === 'none' && this.deps.hints()) this.drawHint(ctx, now);
     }
-    if (this.swipeFade && now < this.swipeFade.until) {
-      const k = (this.swipeFade.until - now) / 1000;
-      drawTrail(ctx, this.swipeFade.pts, this.swipeFade.color, Math.min(1, k * 1.5));
-      if (this.swipeFade.offset) {
-        const [a, b] = this.swipeFade.offset;
-        ctx.save();
-        ctx.globalAlpha = Math.min(1, k * 1.5);
-        ctx.strokeStyle = '#ffd23f';
-        ctx.lineWidth = 3;
-        ctx.setLineDash([5, 5]);
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-        ctx.restore();
-        if (this.swipeFade.label) label(ctx, this.swipeFade.label, (a.x + b.x) / 2, (a.y + b.y) / 2 - 22, 18, Math.min(1, k * 1.5));
-      }
-    } else if (this.swipeFade && now >= this.swipeFade.until) {
-      this.swipeFade = null;
+    const f = this.pullFade;
+    if (f && now < f.until) {
+      const k = Math.min(1, ((f.until - now) / 1000) * 1.5);
+      ctx.save();
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = '#ffd23f';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(f.from[0], f.from[1]);
+      ctx.lineTo(f.to[0], f.to[1]);
+      ctx.stroke();
+      ctx.restore();
+      label(ctx, f.label, (f.from[0] + f.to[0]) / 2, (f.from[1] + f.to[1]) / 2 - 24, 18, k);
+    } else if (f) {
+      this.pullFade = null;
     }
   }
 
-  /** Ghost fingers demonstrating the gestures (alternating two-finger turn and swipe). */
+  /** Rubber band from the disc rim to the finger, plus power and spin readouts. */
+  private drawPull(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const g = this.grab!;
+    const st = this.pullState();
+    const [cx, cy] = this.toScreen(this.origin);
+    const edge = this.toScreen(this.origin.clone().add(new THREE.Vector3(this.visualR, 0, 0)));
+    const r = Math.max(20, Math.hypot(edge[0] - cx, edge[1] - cy));
+    const dx = g.cx - cx;
+    const dy = g.cy - cy;
+    const len = Math.hypot(dx, dy) || 1;
+    // Band anchors on the rim, perpendicular to the pull.
+    const nx = -dy / len;
+    const ny = dx / len;
+    const power = st?.power ?? 0;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = power > 0 ? `hsl(${120 - power * 120}, 85%, 55%)` : 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 5 + power * 4;
+    ctx.beginPath();
+    ctx.moveTo(cx + nx * r, cy + ny * r);
+    ctx.lineTo(g.cx, g.cy);
+    ctx.lineTo(cx - nx * r, cy - ny * r);
+    ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = 'rgba(42,33,64,0.9)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(g.cx, g.cy, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    gauge(ctx, w, h, power);
+    if (st && st.a.ok) {
+      const spinTxt = st.a.spinFactor < 0.08 ? '回転なし' : `${st.a.spinSign > 0 ? '↺' : '↻'} 回転 ${Math.round(st.a.spinFactor * 100)}%`;
+      label(ctx, spinTxt, w / 2, h * 0.14 + 62, 16);
+    }
+  }
+
+  /** Ghost fingers demonstrating the gestures (alternating two-finger turn and pull). */
   private drawHint(ctx: CanvasRenderingContext2D, now: number): void {
     const cycle = Math.floor(now / 1700);
     const wantOrient = !this.hintDone.has('orient');
-    const wantSwipe = !this.hintDone.has('swipe');
+    const wantSwipe = !this.hintDone.has('pull');
     if (!wantOrient && !wantSwipe) return;
     const showOrient = wantOrient && (!wantSwipe || cycle % 2 === 1);
     const t = (now % 1700) / 1700;
@@ -623,7 +651,7 @@ export class ThrowInput {
           [cx - r * 1.6, cy - r * 0.2, cx - r * 1.6, cy - r * 1.6],
           [cx + r * 1.6, cy - r * 0.2, cx + r * 1.6, cy - r * 1.6],
         ]
-      : [[cx + r * 0.7, cy + r * 1.3, cx + r * 0.7, cy - r * 2.4]];
+      : [[cx + r * 0.5, cy, cx + r * 0.9, cy + r * 3.2]];
     ctx.save();
     for (const [x0, y0, x1, y1] of fingers) {
       const x = x0 + (x1 - x0) * e;
@@ -645,7 +673,7 @@ export class ThrowInput {
       ctx.stroke();
     }
     ctx.restore();
-    label(ctx, showOrient ? '2本指で角度・傾き' : 'スワイプで投げる', cx, cy - r * 2.9, 17, alpha);
+    label(ctx, showOrient ? '2本指で角度・傾き' : 'つかんで引っぱって、はなす！', cx, cy - r * 2.2, 17, alpha);
   }
 
   dispose(): void {
@@ -662,24 +690,6 @@ export class ThrowInput {
     this.panel.remove();
     this.scene.remove(this.helpers);
   }
-}
-
-function drawTrail(ctx: CanvasRenderingContext2D, pts: Pt[], color: string, alpha: number): void {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (let i = 1; i < pts.length; i++) {
-    const t = i / pts.length;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3 + t * 9;
-    ctx.globalAlpha = alpha * (0.25 + 0.75 * t);
-    ctx.beginPath();
-    ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
-    ctx.lineTo(pts[i].x, pts[i].y);
-    ctx.stroke();
-  }
-  ctx.restore();
 }
 
 function gauge(ctx: CanvasRenderingContext2D, w: number, h: number, p: number): void {

@@ -165,6 +165,11 @@ export class GameSession implements FXHub {
         sfx: (n) => audio.play(n),
         hints: () => save().stats.throws < 3,
         onPose: (q) => this.posePreview(q),
+        onPull: (dx, dz) => {
+          this.pullOffset.set(dx, 0, dz);
+          this.view.sync(this.disc, this.level!.groundY(this.origin.x, this.origin.z));
+          this.view.root.position.add(this.pullOffset);
+        },
       });
       hud.onPause = () => this.host.onPause();
       hud.onSkip = () => {
@@ -332,7 +337,7 @@ export class GameSession implements FXHub {
     if (this.state !== 'intro') return;
     this.host.hud.hideBanner();
     if (!save().tutorialDone && this.config.mode === 'course') {
-      this.host.hud.toast('<b>2本指ドラッグ</b>で角度と傾き → ディスクを<b>スワイプ</b>して投げよう！', 5200);
+      this.host.hud.toast('<b>2本指ドラッグ</b>で角度と傾き → ディスクを<b>つかんで引っぱって離す</b>と飛ぶよ！', 5200);
       updateSave((d) => (d.tutorialDone = true));
     }
     this.beginAim();
@@ -397,10 +402,13 @@ export class GameSession implements FXHub {
     this.drawMap(null);
   }
 
+  private pullOffset = new THREE.Vector3();
+
   private posePreview(q: [number, number, number, number]): void {
     this.disc.setPosition(this.origin.x, this.origin.y, this.origin.z);
     this.disc.setOrientation(q[0], q[1], q[2], q[3]);
     this.view.sync(this.disc, this.level!.groundY(this.origin.x, this.origin.z));
+    this.view.root.position.add(this.pullOffset);
   }
 
   private pickDisc(d: DiscType, manual: boolean): void {
@@ -487,7 +495,7 @@ export class GameSession implements FXHub {
     const thrown = Math.hypot(restPos.x - this.origin.x, restPos.z - this.origin.z);
     if (reason !== 'water' && reason !== 'ob') updateSave((s) => (s.stats.longest = Math.max(s.stats.longest, thrown)));
     const center = reason === 'basket' && this.basketPosFor() ? this.basketPosFor()! : restPos;
-    this.rig.orbit(center, 4, 1.8, this.clearOrbitAngle(center, Math.atan2(this.origin.z - restPos.z, this.origin.x - restPos.x)), 0.25);
+    this.rig.orbit(center, 2.4, 1.1, this.clearOrbitAngle(center, Math.atan2(this.origin.z - restPos.z, this.origin.x - restPos.x)), 0.25);
     this.stateTimer = 1.6;
 
     switch (this.config.mode) {
@@ -518,7 +526,7 @@ export class GameSession implements FXHub {
     const lv = this.level!;
     for (let i = 0; i < 12; i++) {
       const a = preferred + (i % 2 ? 1 : -1) * Math.ceil(i / 2) * (Math.PI / 6);
-      const cam = new THREE.Vector3(center.x + Math.cos(a) * 4, center.y + 1.8, center.z + Math.sin(a) * 4);
+      const cam = new THREE.Vector3(center.x + Math.cos(a) * 2.4, center.y + 1.1, center.z + Math.sin(a) * 2.4);
       if (!lv.lineBlocked(cam, center.clone().add(new THREE.Vector3(0, 0.2, 0)))) return a;
     }
     return preferred;

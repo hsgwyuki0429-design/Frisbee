@@ -25,16 +25,20 @@ function ringStroke(ctx: CanvasRenderingContext2D, s: number, r: number, w: numb
 }
 
 
-/** Flower-shaped centre with a lettered outer band, like a foam play disc. */
-function foam(ctx: CanvasRenderingContext2D, s: number, band: string, flower: string, inner: string, ink: string): void {
+/**
+ * Foam play disc print: a wide coloured band with big bold lettering in the
+ * flower colour, and a large scalloped flower filling the middle.
+ */
+function foam(ctx: CanvasRenderingContext2D, s: number, band: string, flower: string): void {
   const c = s / 2;
   circle(ctx, c, c, c, band);
-  // Wavy flower.
+  // Scalloped flower.
   ctx.beginPath();
-  const petals = 12;
-  for (let i = 0; i <= 240; i++) {
-    const a = (i / 240) * Math.PI * 2;
-    const r = s * (0.33 + 0.035 * Math.cos(a * petals));
+  const petals = 11;
+  for (let i = 0; i <= 330; i++) {
+    const a = (i / 330) * Math.PI * 2;
+    const wave = Math.abs(Math.cos((a * petals) / 2));
+    const r = s * (0.255 + 0.045 * Math.pow(wave, 0.6));
     const x = c + Math.cos(a) * r;
     const y = c + Math.sin(a) * r;
     if (i === 0) ctx.moveTo(x, y);
@@ -43,22 +47,36 @@ function foam(ctx: CanvasRenderingContext2D, s: number, band: string, flower: st
   ctx.closePath();
   ctx.fillStyle = flower;
   ctx.fill();
-  circle(ctx, c, c, s * 0.2, inner);
-  // Lettering around the band.
-  const text = 'DISC ISLAND ★ DISC ISLAND ★ ';
+  // Big arched lettering over the top of the band.
+  const text = 'DISC ISLAND';
+  const size = s * 0.175;
+  const radius = s * 0.378;
   ctx.save();
   ctx.translate(c, c);
-  ctx.fillStyle = ink;
-  ctx.font = `700 ${Math.round(s * 0.085)}px "Fredoka", "Arial Rounded MT Bold", sans-serif`;
+  ctx.font = `900 ${size}px "Fredoka", "Arial Black", "Arial Rounded MT Bold", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  ctx.fillStyle = flower;
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = s * 0.012;
+  ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+  // Generous tracking so the word wraps about three quarters of the way round.
+  const widths = [...text].map((ch) => (ch === ' ' ? s * 0.06 : ctx.measureText(ch).width * 0.95 + s * 0.045));
+  const total = widths.reduce((a2, w) => a2 + w, 0);
+  let ang = -Math.PI / 2 - total / radius / 2;
   for (let i = 0; i < text.length; i++) {
-    const a = (i / text.length) * Math.PI * 2 - Math.PI / 2;
+    const half = widths[i] / radius / 2;
+    ang += half;
     ctx.save();
-    ctx.rotate(a + Math.PI / 2);
-    ctx.fillText(text[i], 0, -s * 0.43);
+    ctx.rotate(ang + Math.PI / 2);
+    ctx.strokeText(text[i], 0, -radius);
+    ctx.fillText(text[i], 0, -radius);
     ctx.restore();
+    ang += half;
   }
+  // Small size mark at the bottom of the band.
+  ctx.font = `900 ${s * 0.055}px "Fredoka", "Arial Black", sans-serif`;
+  ctx.fillText('235', 0, s * 0.39);
   ctx.restore();
 }
 
@@ -67,30 +85,30 @@ export const SKINS: Skin[] = [
     id: 'classic',
     name: 'スタンダード',
     price: 0,
-    rim: 0xff5a2a,
-    trail: [0xff7a3c, 0x4f7dff],
+    rim: 0x1d2140,
+    trail: [0xff6a3c, 0x4a6fe8],
     draw(ctx, s) {
-      foam(ctx, s, '#ff5a2a', '#4f7dff', '#6f95ff', '#ffffff');
-    },
-  },
-  {
-    id: 'sky',
-    name: 'ウェーブ',
-    price: 30,
-    rim: 0x24b8c9,
-    trail: [0x4fd6e0, 0xffe14a],
-    draw(ctx, s) {
-      foam(ctx, s, '#24b8c9', '#ffe14a', '#fff07a', '#ffe14a');
+      foam(ctx, s, '#f2512b', '#3c62e6');
     },
   },
   {
     id: 'pop',
     name: 'ポップ',
-    price: 40,
-    rim: 0xc6e83a,
-    trail: [0xd6f04a, 0xff4f5e],
+    price: 30,
+    rim: 0x1d2140,
+    trail: [0xc8e63a, 0xff3b4e],
     draw(ctx, s) {
-      foam(ctx, s, '#c6e83a', '#ff4f5e', '#ff7380', '#ff4f5e');
+      foam(ctx, s, '#c3e235', '#ff3b4e');
+    },
+  },
+  {
+    id: 'sky',
+    name: 'ウェーブ',
+    price: 40,
+    rim: 0x1d2140,
+    trail: [0x2bb3c0, 0xffe23a],
+    draw(ctx, s) {
+      foam(ctx, s, '#22b0c2', '#ffe23a');
     },
   },
   {
@@ -285,8 +303,8 @@ export function skinCanvas(skin: Skin, size: number): HTMLCanvasElement {
   skin.draw(ctx, size);
   ctx.restore();
   ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size / 2 - size * 0.03, 0, Math.PI * 2);
-  ctx.lineWidth = size * 0.06;
+  ctx.arc(size / 2, size / 2, size / 2 - size * 0.012, 0, Math.PI * 2);
+  ctx.lineWidth = size * 0.024;
   ctx.strokeStyle = '#' + skin.rim.toString(16).padStart(6, '0');
   ctx.stroke();
   return c;
