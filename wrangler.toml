@@ -1,0 +1,6 @@
+# Cloudflare Pages configuration.
+# Dashboard: Build command `npm run build`, Build output directory `dist`.
+# CLI:       npm run build && npx wrangler pages deploy
+name = "disc-island"
+compatibility_date = "2026-10-01"
+pages_build_output_dir = "./dist"
