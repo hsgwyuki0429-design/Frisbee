@@ -393,7 +393,7 @@ export class PhysicsWorld implements ContactSink {
       const vn = v.x * c.nx + v.y * c.ny + v.z * c.nz;
       c.target = 0;
       if (vn < -BOUNCE_THRESHOLD) {
-        c.target = -c.mat.restitution * vn;
+        c.target = -c.mat.restitution * disc.restitutionScale * vn;
         if (c.mat.boost) c.target = Math.max(c.target, c.mat.boost);
       }
       // Gentle penetration recovery bias.

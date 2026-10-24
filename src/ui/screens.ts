@@ -179,7 +179,7 @@ export class Screens {
   challengeSelect(onPlay: (k: 'distance' | 'target' | 'rings') => void, onBack: () => void): void {
     const c = save().challenge;
     const medal = (k: string, v: number) => {
-      const m = k === 'distance' ? (v >= 110 ? 3 : v >= 80 ? 2 : v >= 50 ? 1 : 0) : k === 'target' ? (v >= 350 ? 3 : v >= 250 ? 2 : v >= 150 ? 1 : 0) : v >= 10 ? 3 : v >= 7 ? 2 : v >= 4 ? 1 : 0;
+      const m = k === 'distance' ? (v >= 45 ? 3 : v >= 35 ? 2 : v >= 25 ? 1 : 0) : k === 'target' ? (v >= 350 ? 3 : v >= 250 ? 2 : v >= 150 ? 1 : 0) : v >= 10 ? 3 : v >= 7 ? 2 : v >= 4 ? 1 : 0;
       return MEDALS[m];
     };
     const card = (k: string, icon: string, name: string, desc: string, rec: string, color: string) =>
@@ -273,19 +273,14 @@ export class Screens {
         text: 'ディスクをバスケットの<b>チェーン</b>に当てて、カゴに入れたらホールアウト。<br>できるだけ<b>少ない投げ数</b>でクリアしよう。パーより少なければバーディー！',
       },
       {
-        title: '① 角度をきめる',
-        img: svgAngle(),
-        text: '<b>真横</b>から見て、投げる角度を決めるよ。<br>画面を<b>上下にドラッグ</b>（または＋−ボタン）。<br>高く投げると滞空時間が長く、低いと速く飛ぶ。',
-      },
-      {
-        title: '② 傾きをきめる',
+        title: '角度と傾きをきめる',
         img: svgTilt(),
-        text: '投げる方向の<b>真後ろ</b>から見て、ディスクの傾きを決めるよ。<br><b>左右にドラッグ</b>。傾けたほうへカーブする！<br>木をよけたり、曲がったコースをせめよう。',
+        text: 'ディスクの<b>うしろ</b>からの視点で、<b>2本指でドラッグ</b>するとディスクが回るよ（PCは右ドラッグ／Shift＋ドラッグ／矢印キー）。<br><b>上下</b>＝投げる角度、<b>左右・ひねる</b>＝傾き。傾きはぐるっと360°まわせる！<br>傾けたほうへカーブするよ。',
       },
       {
-        title: '③ スワイプで投げる',
+        title: 'スワイプで投げる',
         img: svgSwipe(),
-        text: '<b>上から</b>見たディスクを指でなぞって投げる！<br><b>スワイプの向き</b>＝飛ぶ方向（ディスクの中心を通る平行な向き）<br><b>スワイプの速さ</b>＝パワー',
+        text: 'ディスクを<b>1本指</b>でなぞって投げる！<br><b>スワイプの向き</b>＝飛ぶ方向（ディスクの中心を通る平行な向き）<br><b>スワイプの速さ</b>＝パワー',
       },
       {
         title: '回転がカギ！',
@@ -521,15 +516,6 @@ function svgBasket(): string {
     ${discSvg(250, 70, 26, 8, -12)}<path d="M222 76 Q 200 84 192 92" stroke="#fff" stroke-width="4" stroke-dasharray="6 6" fill="none"/>`);
 }
 
-function svgAngle(): string {
-  return svgWrap(`<rect width="320" height="180" rx="18" fill="#bfeaff"/><rect y="140" width="320" height="40" fill="#5fcd3c"/>
-    <line x1="70" y1="110" x2="290" y2="110" stroke="#fff" stroke-width="3" stroke-dasharray="8 6"/>
-    <line x1="70" y1="110" x2="250" y2="50" stroke="#ff4f6d" stroke-width="6" stroke-linecap="round"/><path d="M250 50 l-18 -2 l8 16 z" fill="#ff4f6d"/>
-    <path d="M140 110 A 70 70 0 0 0 136 88" stroke="#fff" stroke-width="4" fill="none"/><text x="150" y="100" font-size="20" font-weight="900" fill="${INK}">15°</text>
-    ${discSvg(70, 110, 30, 6, -18)}
-    <g transform="translate(30 30)"><rect width="34" height="54" rx="17" fill="#fff" stroke="${INK}" stroke-width="3"/><path d="M17 12 v30 M9 20 l8 -8 l8 8 M9 34 l8 8 l8 -8" stroke="${INK}" stroke-width="3" fill="none"/></g>`);
-}
-
 function svgTilt(): string {
   return svgWrap(`<rect width="320" height="180" rx="18" fill="#bfeaff"/><rect y="140" width="320" height="40" fill="#5fcd3c"/>
     <path d="M60 110 A 100 100 0 0 1 260 110" stroke="#fff" stroke-width="4" fill="none"/>
@@ -537,7 +523,7 @@ function svgTilt(): string {
     <g transform="rotate(25 160 110)"><ellipse cx="160" cy="110" rx="70" ry="9" fill="#ff4f5e" stroke="${INK}" stroke-width="4"/></g>
     <path d="M200 60 Q 230 30 270 34" stroke="#ffd23f" stroke-width="6" fill="none" stroke-linecap="round"/><path d="M272 34 l-14 -8 l2 16 z" fill="#ffd23f"/>
     <text x="40" y="60" font-size="22" font-weight="900" fill="${INK}">L</text><text x="268" y="96" font-size="22" font-weight="900" fill="${INK}">R</text>
-    <g transform="translate(18 120)"><rect width="60" height="34" rx="17" fill="#fff" stroke="${INK}" stroke-width="3"/><path d="M12 17 h36 M20 9 l-8 8 l8 8 M40 9 l8 8 l-8 8" stroke="${INK}" stroke-width="3" fill="none"/></g>`);
+    <g transform="translate(16 112)"><circle cx="16" cy="22" r="13" fill="#fff" stroke="${INK}" stroke-width="3"/><circle cx="50" cy="22" r="13" fill="#fff" stroke="${INK}" stroke-width="3"/><path d="M16 4 v-10 M50 4 v-10 M10 -2 l6 -6 l6 6 M44 -2 l6 -6 l6 6" stroke="${INK}" stroke-width="3" fill="none"/></g>`);
 }
 
 function svgSwipe(): string {

@@ -60,7 +60,7 @@ export function generateTerrain(def: StageDef): TerrainData {
   const fair = new Float32Array(nx * nz);
   const coast = new Float32Array(nx * nz);
   const landH = def.landHeight ?? (sky ? 0 : def.theme === 'beach' ? 0.9 : 1.2);
-  const shore = def.theme === 'beach' ? 9 : 6;
+  const shore = def.theme === 'beach' ? 6.5 : 6;
 
   const rawHeight = (x: number, z: number): { h: number; d: number } => {
     const n = fbm(x * 0.045, z * 0.045, seed);

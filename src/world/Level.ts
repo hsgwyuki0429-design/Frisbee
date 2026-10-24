@@ -185,6 +185,37 @@ export class Level {
     return out;
   }
 
+  /** True when a tree trunk, pipe or wall stands between two points. */
+  lineBlocked(a: THREE.Vector3, b: THREE.Vector3): boolean {
+    for (const c of this.colliders) {
+      if (!(c instanceof CylinderCollider) && !(c instanceof BoxCollider)) continue;
+      if (c.tag === 'pole' || c.tag === 'tray' || c.tag === 'band') continue;
+      const cx = (c.minX + c.maxX) / 2;
+      const cz = (c.minZ + c.maxZ) / 2;
+      const r = Math.max(c.maxX - c.minX, c.maxZ - c.minZ) / 2 + 0.25;
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      const l2 = dx * dx + dz * dz || 1;
+      const t = THREE.MathUtils.clamp(((cx - a.x) * dx + (cz - a.z) * dz) / l2, 0, 1);
+      const y = a.y + (b.y - a.y) * t;
+      if (Math.hypot(a.x + dx * t - cx, a.z + dz * t - cz) < r && y > c.minY && y < c.maxY + 0.3) return true;
+    }
+    return false;
+  }
+
+  /** Slides a camera point toward its target until it is out of any tree canopy. */
+  cameraSafe(cam: THREE.Vector3, target: THREE.Vector3): THREE.Vector3 {
+    const inside = (p: THREE.Vector3) =>
+      this.volumes.some((v) => v.kind === 'sphere' && v.id.startsWith('leaves:') && p.distanceToSquared(new THREE.Vector3(v.x, v.y, v.z)) < (v.r + 0.3) ** 2);
+    if (!inside(cam)) return cam;
+    const q = new THREE.Vector3();
+    for (let t = 0.15; t < 0.95; t += 0.15) {
+      q.lerpVectors(cam, target, t);
+      if (!inside(q)) return q.clone();
+    }
+    return q.lerpVectors(cam, target, 0.9).clone();
+  }
+
   /** Height of the terrain under (x, z). */
   groundY(x: number, z: number): number {
     return this.terrain.hf.heightAt(x, z);

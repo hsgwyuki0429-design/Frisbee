@@ -24,39 +24,73 @@ function ringStroke(ctx: CanvasRenderingContext2D, s: number, r: number, w: numb
   ctx.stroke();
 }
 
+
+/** Flower-shaped centre with a lettered outer band, like a foam play disc. */
+function foam(ctx: CanvasRenderingContext2D, s: number, band: string, flower: string, inner: string, ink: string): void {
+  const c = s / 2;
+  circle(ctx, c, c, c, band);
+  // Wavy flower.
+  ctx.beginPath();
+  const petals = 12;
+  for (let i = 0; i <= 240; i++) {
+    const a = (i / 240) * Math.PI * 2;
+    const r = s * (0.33 + 0.035 * Math.cos(a * petals));
+    const x = c + Math.cos(a) * r;
+    const y = c + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = flower;
+  ctx.fill();
+  circle(ctx, c, c, s * 0.2, inner);
+  // Lettering around the band.
+  const text = 'DISC ISLAND ★ DISC ISLAND ★ ';
+  ctx.save();
+  ctx.translate(c, c);
+  ctx.fillStyle = ink;
+  ctx.font = `700 ${Math.round(s * 0.085)}px "Fredoka", "Arial Rounded MT Bold", sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < text.length; i++) {
+    const a = (i / text.length) * Math.PI * 2 - Math.PI / 2;
+    ctx.save();
+    ctx.rotate(a + Math.PI / 2);
+    ctx.fillText(text[i], 0, -s * 0.43);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
 export const SKINS: Skin[] = [
   {
     id: 'classic',
     name: 'スタンダード',
     price: 0,
-    rim: 0xff4f5e,
-    trail: [0xff6b6b, 0xffd23f],
+    rim: 0xff5a2a,
+    trail: [0xff7a3c, 0x4f7dff],
     draw(ctx, s) {
-      circle(ctx, s / 2, s / 2, s / 2, '#ff4f5e');
-      ringStroke(ctx, s, s * 0.4, s * 0.04, '#ffffff');
-      starPath(ctx, s / 2, s / 2 + s * 0.02, s * 0.24, s * 0.1);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
+      foam(ctx, s, '#ff5a2a', '#4f7dff', '#6f95ff', '#ffffff');
     },
   },
   {
     id: 'sky',
-    name: 'そらいろ',
+    name: 'ウェーブ',
     price: 30,
-    rim: 0x3fa9ff,
-    trail: [0x7fd0ff, 0xffffff],
+    rim: 0x24b8c9,
+    trail: [0x4fd6e0, 0xffe14a],
     draw(ctx, s) {
-      const g = ctx.createLinearGradient(0, 0, 0, s);
-      g.addColorStop(0, '#2f8fff');
-      g.addColorStop(1, '#a8e6ff');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, s, s);
-      for (const [x, y, r] of [
-        [0.35, 0.55, 0.13],
-        [0.5, 0.5, 0.16],
-        [0.66, 0.56, 0.12],
-        [0.5, 0.6, 0.12],
-      ]) circle(ctx, x * s, y * s, r * s, '#ffffff');
+      foam(ctx, s, '#24b8c9', '#ffe14a', '#fff07a', '#ffe14a');
+    },
+  },
+  {
+    id: 'pop',
+    name: 'ポップ',
+    price: 40,
+    rim: 0xc6e83a,
+    trail: [0xd6f04a, 0xff4f5e],
+    draw(ctx, s) {
+      foam(ctx, s, '#c6e83a', '#ff4f5e', '#ff7380', '#ff4f5e');
     },
   },
   {

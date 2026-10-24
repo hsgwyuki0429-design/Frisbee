@@ -3,45 +3,36 @@ import { skinCanvas, type Skin } from '../data/skins';
 import type { DiscBody } from '../physics/DiscBody';
 import { outlineMaterial, toon, toonGradient } from '../render/toon';
 
-const R = 0.106;
+/** Rim tube radius and flat-top extent of the padded foam disc, in units of the disc radius. */
+const RIM = 0.12;
+const FLAT = 1 - RIM;
 
-/** Disc golf disc profile (radius, height) from the top centre around the rim to the underside. */
+/**
+ * Soft flying disc profile (unit radius): flat padded top, a fat rounded foam
+ * rim, and a flat underside with a shallow recess.
+ */
 function profile(): THREE.Vector2[] {
-  const pts: [number, number][] = [
-    [0.0, 0.0125],
-    [0.04, 0.0122],
-    [0.07, 0.0112],
-    [0.09, 0.0095],
-    [0.1, 0.0075],
-    [0.1048, 0.004],
-    [0.106, 0.0],
-    [0.1052, -0.005],
-    [0.1015, -0.0085],
-    [0.095, -0.0095],
-    [0.0905, -0.007],
-    [0.089, -0.002],
-    [0.085, 0.0012],
-    [0.06, 0.0028],
-    [0.0, 0.0035],
-  ];
-  return pts.map(([r, y]) => new THREE.Vector2(r, y));
+  const pts: THREE.Vector2[] = [new THREE.Vector2(0, RIM), new THREE.Vector2(FLAT * 0.5, RIM)];
+  for (let i = 0; i <= 12; i++) {
+    const a = Math.PI / 2 - (i / 12) * Math.PI;
+    pts.push(new THREE.Vector2(FLAT + RIM * Math.cos(a), RIM * Math.sin(a)));
+  }
+  pts.push(new THREE.Vector2(FLAT * 0.82, -RIM), new THREE.Vector2(FLAT * 0.74, -RIM * 0.7), new THREE.Vector2(0, -RIM * 0.62));
+  return pts;
 }
 
-function domeY(r: number): number {
-  const p = profile();
-  for (let i = 0; i < 6; i++) {
-    if (r <= p[i + 1].x) {
-      const t = (r - p[i].x) / (p[i + 1].x - p[i].x);
-      return p[i].y + (p[i + 1].y - p[i].y) * t;
-    }
-  }
-  return 0;
+/** Height of the top surface at unit radius r. */
+function topY(r: number): number {
+  if (r <= FLAT) return RIM;
+  const u = Math.min(1, (r - FLAT) / RIM);
+  return RIM * Math.sqrt(1 - u * u);
 }
 
 export class DiscView {
   readonly root = new THREE.Group();
   /** Visual scale multiplier (the disc is shown a little larger than life for readability). */
-  readonly visualScale = 1.25;
+  readonly visualScale = 1.1;
+  private radius = 0.1175;
   private body: THREE.Mesh;
   private top: THREE.Mesh;
   private topMat: THREE.MeshToonMaterial;
@@ -56,15 +47,16 @@ export class DiscView {
     this.bodyMat.userData = {};
     this.body = new THREE.Mesh(lathe, this.bodyMat);
     this.body.castShadow = true;
-    const ol = new THREE.Mesh(lathe, outlineMaterial(0x2a2140, 0.004));
+    const ol = new THREE.Mesh(lathe, outlineMaterial(0x2a2140, 0.035));
     this.body.add(ol);
 
-    const cap = new THREE.CircleGeometry(R * 0.985, 48);
+    // Printed top face: follows the flat top and wraps over the padded rim.
+    const cap = new THREE.CircleGeometry(0.975, 64, 0, Math.PI * 2);
     cap.rotateX(-Math.PI / 2);
     const pos = cap.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const r = Math.hypot(pos.getX(i), pos.getZ(i));
-      pos.setY(i, domeY(r) + 0.0004);
+      pos.setY(i, topY(r) + 0.004);
     }
     cap.computeVertexNormals();
     this.topMat = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: toonGradient() });
@@ -72,14 +64,13 @@ export class DiscView {
     this.top.castShadow = false;
 
     this.root.add(this.body, this.top);
-    this.root.scale.setScalar(this.visualScale);
     scene.add(this.root);
 
     this.trail = new Trail(scene);
 
     // Fake contact shadow that stays readable even without shadow maps.
     const blob = new THREE.Mesh(
-      new THREE.CircleGeometry(R * 1.4, 24),
+      new THREE.CircleGeometry(1.4, 24),
       new THREE.MeshBasicMaterial({ color: 0x1a2a10, transparent: true, opacity: 0.25, depthWrite: false }),
     );
     blob.rotation.x = -Math.PI / 2;
@@ -87,7 +78,19 @@ export class DiscView {
     this.shadowBlob = blob;
     scene.add(blob);
 
+    this.setRadius(this.radius);
     this.setSkin(skin);
+  }
+
+  /** Physical disc radius in metres (the mesh is built at unit radius). */
+  setRadius(r: number): void {
+    this.radius = r;
+    this.setDistanceScale(null);
+  }
+
+  /** Radius as drawn on screen (physical radius × visual scale). */
+  get visualRadius(): number {
+    return this.radius * this.visualScale;
   }
 
   setSkin(skin: Skin): void {
@@ -112,7 +115,7 @@ export class DiscView {
       this.shadowBlob.visible = h < 25 && h > -0.5;
       this.shadowBlob.position.set(disc.x, groundY + 0.03, disc.z);
       const k = Math.max(0.4, 1 + h * 0.05);
-      this.shadowBlob.scale.setScalar(k);
+      this.shadowBlob.scale.setScalar(k * this.radius);
       (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = Math.max(0.05, 0.3 - h * 0.012);
     } else {
       this.shadowBlob.visible = false;
@@ -121,8 +124,8 @@ export class DiscView {
 
   /** Enlarges the disc with camera distance so it stays readable in flight. */
   setDistanceScale(camDist: number | null): void {
-    const k = camDist === null ? 1 : THREE.MathUtils.clamp(camDist * 0.2, 1, 2.6);
-    this.root.scale.setScalar(this.visualScale * k);
+    const k = camDist === null ? 1 : THREE.MathUtils.clamp(camDist * 0.18, 1, 2.4);
+    this.root.scale.setScalar(this.radius * this.visualScale * k);
   }
 
   setVisible(v: boolean): void {

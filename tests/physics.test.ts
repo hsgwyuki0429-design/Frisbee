@@ -64,28 +64,28 @@ describe('launch frame', () => {
 
 describe('flight', () => {
   it('a well spun midrange throw flies a long way', () => {
-    const r = throwDisc('flat', 21, 8, 0, -0.5);
-    expect(-r.z).toBeGreaterThan(55);
+    const r = throwDisc('flat', 14, 8, 0, -0.5);
+    expect(-r.z).toBeGreaterThan(30);
   });
 
   it('spin direction mirrors the flight', () => {
-    const cw = throwDisc('cw', 21, 8, 0, -0.5);
-    const ccw = throwDisc('ccw', 21, 8, 0, 0.5);
+    const cw = throwDisc('cw', 14, 8, 0, -0.5);
+    const ccw = throwDisc('ccw', 14, 8, 0, 0.5);
     expect(cw.x).toBeCloseTo(-ccw.x, 1);
     expect(cw.z).toBeCloseTo(ccw.z, 1);
   });
 
   it('bank angle steers the disc', () => {
-    const left = throwDisc('l', 21, 8, -20, -0.5);
-    const right = throwDisc('r', 21, 8, 20, -0.5);
+    const left = throwDisc('l', 14, 8, -20, -0.5);
+    const right = throwDisc('r', 14, 8, 20, -0.5);
     expect(left.x).toBeLessThan(-5);
     expect(right.x).toBeGreaterThan(5);
   });
 
   it('no spin makes the disc tumble and fall short', () => {
-    const spun = throwDisc('s', 21, 8, 0, -0.5);
-    const flat = throwDisc('n', 21, 8, 0, 0);
-    expect(-flat.z).toBeLessThan(-spun.z * 0.4);
+    const spun = throwDisc('s', 14, 8, 0, -0.5);
+    const flat = throwDisc('n', 14, 8, 0, 0);
+    expect(-flat.z).toBeLessThan(-spun.z * 0.5);
   });
 
   it('driver outflies putter at full power', () => {
@@ -93,16 +93,16 @@ describe('flight', () => {
     const put = DISC_TYPES.find((d) => d.id === 'putter')!;
     const a = throwDisc('d', drv.maxSpeed, 9, -5, -0.5, 'driver');
     const b = throwDisc('p', put.maxSpeed, 9, -5, -0.5, 'putter');
-    expect(-a.z).toBeGreaterThan(-b.z * 1.6);
+    expect(-a.z).toBeGreaterThan(-b.z * 1.15);
   });
 
   it('headwind shortens the throw', () => {
     const { disc, w } = world();
     disc.wind.z = 4; // blowing toward +z, i.e. into the thrower's face
-    applyLaunch(disc, 0, 1, 0, { hx: 0, hz: -1, angle: 0.14, tilt: 0, speed: 21, spin: -100 });
+    applyLaunch(disc, 0, 1, 0, { hx: 0, hz: -1, angle: 0.14, tilt: 0, speed: 14, spin: -60 });
     w.launch();
     run(w, 30);
-    const calm = throwDisc('c', 21, 8, 0, -100 * 0.106 / 21);
+    const calm = throwDisc('c', 14, 8, 0, (-60 * 0.1175) / 14);
     expect(-disc.z).toBeLessThan(-calm.z);
   });
 });
