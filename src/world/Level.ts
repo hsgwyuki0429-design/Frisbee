@@ -538,8 +538,8 @@ export class Level {
   }
 
   /** Reacts to a physics event visually and returns gameplay rewards. */
-  handleEvent(e: PhysEvent, disc: DiscBody, fx: FXHub): { coins: number; boost: number; label?: string } {
-    const res = { coins: 0, boost: 0, label: undefined as string | undefined };
+  handleEvent(e: PhysEvent, disc: DiscBody, fx: FXHub): { coins: number; boost: number } {
+    const res = { coins: 0, boost: 0 };
     const p = new THREE.Vector3(disc.x, disc.y, disc.z);
     if (e.type === 'trigger') {
       const coin = this.coins.find((c) => c.trigger === e.trigger);
@@ -559,7 +559,6 @@ export class Level {
           if (!ring.passed) {
             ring.passed = true;
             res.coins += 5;
-            res.label = 'ring';
             fx.sfx('ring');
             fx.burst('star', ring.group.position, 18, 0xfff27a, 6);
             fx.popup('NICE! +5', ring.group.position, 'nice');

@@ -31,6 +31,8 @@ export interface ThrowInputDeps {
   onMiss: (reason: string) => void;
   onAimPreview?: (hx: number, hz: number) => void;
   sfx: (name: 'click' | 'tick' | 'swipe' | 'back') => void;
+  /** Whether to show the animated gesture hints (first throws). */
+  hints: () => boolean;
   /** Disc pose preview: called whenever angle/tilt change. */
   onPose: (quat: [number, number, number, number]) => void;
 }
@@ -206,10 +208,13 @@ export class ThrowInput {
     const rig = this.deps.rig;
     const portrait = window.innerHeight > window.innerWidth;
     if (this.phase === 'angle') {
-      const dist = portrait ? 2.3 : 1.55;
-      const pos = o.clone().addScaledVector(right, dist).addScaledVector(fwd, 0.45).add(new THREE.Vector3(0, 0.22, 0));
-      const look = o.clone().addScaledVector(fwd, 0.45).add(new THREE.Vector3(0, 0.12, 0));
-      rig.setPose(pos, look, 45, dur);
+      // Fit the disc and the 1 m launch arrow horizontally, whatever the aspect ratio.
+      const fov = portrait ? 52 : 45;
+      const aspect = window.innerWidth / window.innerHeight;
+      const dist = Math.max(1.5, 0.78 / (Math.tan(THREE.MathUtils.degToRad(fov / 2)) * aspect));
+      const pos = o.clone().addScaledVector(right, dist).addScaledVector(fwd, 0.42).add(new THREE.Vector3(0, 0.22, 0));
+      const look = o.clone().addScaledVector(fwd, 0.42).add(new THREE.Vector3(0, portrait ? 0.3 : 0.12, 0));
+      rig.setPose(pos, look, fov, dur);
     } else if (this.phase === 'tilt') {
       const f = this.frame().forward;
       const fv = new THREE.Vector3(f[0], f[1], f[2]);
@@ -220,7 +225,7 @@ export class ThrowInput {
     } else {
       // Close top-down view; distance chosen so the disc fills a comfortable area of the screen.
       const minDim = Math.min(window.innerWidth, window.innerHeight);
-      const targetR = Math.max(70, Math.min(150, minDim * 0.17));
+      const targetR = Math.max(80, Math.min(150, minDim * 0.24));
       const fov = 50;
       const d = (VISUAL_R * window.innerHeight) / (2 * Math.tan(THREE.MathUtils.degToRad(fov / 2)) * targetR);
       const pitch = THREE.MathUtils.degToRad(74);
@@ -344,6 +349,7 @@ export class ThrowInput {
   private down(e: PointerEvent): void {
     if (!this.active || e.button > 0) return;
     this.dragging = true;
+    this.hintDone.add(this.phase);
     this.pointerType = e.pointerType || 'mouse';
     this.lastX = e.clientX;
     this.lastY = e.clientY;
@@ -359,7 +365,7 @@ export class ThrowInput {
     const dx = e.clientX - this.lastX;
     const dy = e.clientY - this.lastY;
     if (this.phase === 'angle') {
-      this.accum += -dy * 0.22 + 0 * dx;
+      this.accum += -dy * 0.22;
       const steps = Math.trunc(this.accum);
       if (steps !== 0) {
         this.accum -= steps;
@@ -383,8 +389,9 @@ export class ThrowInput {
     this.lastY = e.clientY;
   }
   private accum = 0;
+  private hintDone = new Set<AimPhase>();
   /** Diagnostics for the most recent swipe (inspected by automated tests). */
-  lastSwipe: { pts: number[][]; dd: number; offset: number; closest: number } | null = null;
+  lastSwipe: { pts: number[][]; dd: number; offset: number } | null = null;
 
   private up(e: PointerEvent): void {
     if (!this.active || !this.dragging) return;
@@ -455,7 +462,7 @@ export class ThrowInput {
     if (pts.length < 2 || !this.disc) return;
     const c = this.origin;
     const a = analyzeSwipe(this.toSamples(pts), c.x, c.z, VISUAL_R, this.fullSpeed());
-    this.lastSwipe = { pts: pts.map((p) => [Math.round(p.x), Math.round(p.y), Math.round(p.t)]), dd: a.dd, offset: a.offset, closest: 0 };
+    this.lastSwipe = { pts: pts.map((p) => [Math.round(p.x), Math.round(p.y), Math.round(p.t)]), dd: a.dd, offset: a.offset };
     if (a.reason === 'tap') return;
     if (!a.ok) {
       this.deps.sfx('back');
@@ -595,6 +602,7 @@ export class ThrowInput {
         gauge(ctx, w, h, this.livePower);
       }
     }
+    if (this.active && !this.dragging && !this.hintDone.has(this.phase) && this.deps.hints()) this.drawHint(ctx, w, h, now);
     if (this.swipeFade && now < this.swipeFade.until) {
       const k = (this.swipeFade.until - now) / 1000;
       drawTrail(ctx, this.swipeFade.pts, this.swipeFade.color, Math.min(1, k * 1.5));
@@ -615,6 +623,56 @@ export class ThrowInput {
     } else if (this.swipeFade && now >= this.swipeFade.until) {
       this.swipeFade = null;
     }
+  }
+
+  /** Ghost finger demonstrating the gesture of the current step. */
+  private drawHint(ctx: CanvasRenderingContext2D, w: number, h: number, now: number): void {
+    const t = (now % 1700) / 1700;
+    const k = t < 0.15 ? 0 : t > 0.85 ? 1 : (t - 0.15) / 0.7;
+    const e = k * k * (3 - 2 * k);
+    const alpha = t < 0.1 ? t / 0.1 : t > 0.9 ? (1 - t) / 0.1 : 1;
+    let x0: number, y0: number, x1: number, y1: number;
+    if (this.phase === 'angle') {
+      x0 = x1 = w * 0.62;
+      y0 = h * 0.55;
+      y1 = h * 0.38;
+    } else if (this.phase === 'tilt') {
+      y0 = y1 = h * 0.6;
+      x0 = w * 0.5 - Math.min(w, h) * 0.18;
+      x1 = w * 0.5 + Math.min(w, h) * 0.18;
+    } else {
+      const [cx, cy] = this.toScreen(this.origin);
+      const edge = this.toScreen(this.origin.clone().add(new THREE.Vector3(VISUAL_R, 0, 0)));
+      const r = Math.max(30, Math.hypot(edge[0] - cx, edge[1] - cy));
+      x0 = x1 = cx + r * 0.7;
+      y0 = cy + r * 1.5;
+      y1 = cy - r * 2.4;
+    }
+    const x = x0 + (x1 - x0) * e;
+    const y = y0 + (y1 - y0) * e;
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.9;
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.strokeStyle = 'rgba(42,33,64,0.9)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(x, y, 17, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y, 17 + 14 * ((now % 700) / 700), 0, Math.PI * 2);
+    ctx.globalAlpha = alpha * (1 - (now % 700) / 700) * 0.8;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.restore();
   }
 
   dispose(): void {

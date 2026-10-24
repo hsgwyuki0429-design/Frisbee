@@ -4,7 +4,7 @@ import { DISC_TYPES, discById, type DiscType } from '../data/discs';
 import { skinById } from '../data/skins';
 import type { StageDef } from '../data/types';
 import { DiscBody } from '../physics/DiscBody';
-import { applyLaunch, launchFrame } from '../physics/launch';
+import { applyLaunch } from '../physics/launch';
 import { PhysicsWorld, type PhysEvent } from '../physics/PhysicsWorld';
 import { save, update as updateSave, type Settings } from '../save';
 import type { Hud } from '../ui/Hud';
@@ -134,6 +134,7 @@ export class GameSession implements FXHub {
   private ringsPassed = new Set<string>();
   private practiceFromTee = true;
   private rnd = mulberry32(Date.now() & 0xffff);
+  private hudTimer = 0;
 
   constructor(
     private host: SessionHost,
@@ -163,6 +164,7 @@ export class GameSession implements FXHub {
         },
         onAimPreview: (hx, hz) => this.drawMap([hx, hz]),
         sfx: (n) => audio.play(n),
+        hints: () => save().stats.throws < 3,
         onPose: (q) => this.posePreview(q),
       });
       hud.onPause = () => this.host.onPause();
@@ -881,7 +883,9 @@ export class GameSession implements FXHub {
     if (!this.world.touchedGround) this.view.trailPush(disc);
     else this.view.trailFade(dt * 2);
     const sp = disc.speed();
-    if (this.config.mode !== 'demo') {
+    this.hudTimer -= dt;
+    if (this.config.mode !== 'demo' && this.hudTimer <= 0) {
+      this.hudTimer = 0.08;
       audio.flight(this.world.touchedGround ? Math.min(sp, 6) : sp);
       const h = disc.y - lv.groundY(disc.x, disc.z);
       const d = Math.hypot(disc.x - this.origin.x, disc.z - this.origin.z);
@@ -1095,12 +1099,6 @@ export class GameSession implements FXHub {
   resize(): void {
     this.rig.resize(window.innerWidth / window.innerHeight);
     this.input?.resize();
-  }
-
-  /** Re-orients the aim preview disc (used after resize). */
-  previewQuat(): [number, number, number, number] {
-    const a = this.aimDir();
-    return launchFrame(a.x, a.y, 0.17, 0).quat;
   }
 
   dispose(): void {

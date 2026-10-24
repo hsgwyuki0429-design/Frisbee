@@ -5,6 +5,18 @@ import { addOutline, outlineMaterial, toon } from '../render/toon';
 
 const OUTLINE = 0x2a2140;
 
+/** A plane that reads correctly from both sides (two back-to-back faces). */
+function twoSidedPlane(w: number, h: number, map: THREE.Texture): THREE.Group {
+  const g = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(w, h);
+  const mat = new THREE.MeshToonMaterial({ map });
+  const front = new THREE.Mesh(geo, mat);
+  const back = new THREE.Mesh(geo, mat);
+  back.rotation.y = Math.PI;
+  g.add(front, back);
+  return g;
+}
+
 export interface BasketModel {
   root: THREE.Group;
   chains: THREE.Group;
@@ -73,8 +85,11 @@ export function buildBasket(label: string, flagColor = '#ff4f6d'): BasketModel {
   const flagPole = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.9, 6), metal);
   flagPole.position.y = b.topY + 0.25;
   root.add(flagPole);
-  const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.4), new THREE.MeshToonMaterial({ map: flagTexture(label, flagColor), side: THREE.DoubleSide }));
-  flag.position.set(0.32, b.topY + 0.5, 0);
+  const flag = new THREE.Group();
+  const flagFace = twoSidedPlane(0.62, 0.4, flagTexture(label, flagColor));
+  flagFace.position.x = 0.31;
+  flag.add(flagFace);
+  flag.position.set(0, b.topY + 0.5, 0);
   root.add(flag);
 
   // Floating arrow marker.
@@ -136,7 +151,7 @@ export function buildTee(hole: number | string, par: number | null, dist: number
   const lines: { text: string; size: number; color?: string }[] = [{ text: typeof hole === 'number' ? `HOLE ${hole}` : hole, size: 74, color: '#e2574c' }];
   if (par !== null) lines.push({ text: `PAR ${par}`, size: 60 });
   if (dist !== null) lines.push({ text: `${Math.round(dist)} m`, size: 54, color: '#4a8fe0' });
-  const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1.0), new THREE.MeshToonMaterial({ map: signTexture(lines), side: THREE.DoubleSide }));
+  const sign = twoSidedPlane(1.6, 1.0, signTexture(lines));
   sign.position.set(-2.6, 1.55, 2.6);
   sign.rotation.y = 0.5;
   const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.2, 6), toon(0x9b5a2e));
@@ -207,7 +222,7 @@ export function buildMarker(text: string, color: number): THREE.Group {
   post.position.y = 0.8;
   g.add(post);
   const hex = '#' + color.toString(16).padStart(6, '0');
-  const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.56), new THREE.MeshToonMaterial({ map: flagTexture(text, hex), side: THREE.DoubleSide }));
+  const flag = twoSidedPlane(0.9, 0.56, flagTexture(text, hex));
   flag.position.set(0.47, 1.3, 0);
   g.add(flag);
   return g;
